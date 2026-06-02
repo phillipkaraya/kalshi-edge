@@ -141,6 +141,9 @@ def get_game_odds_cached(
             raw = [OddsGame.model_validate(g) for g in json.loads(path.read_text())]
             return transform_odds_games(raw), True
         raise
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps([g.model_dump(mode="json") for g in games_raw]))
+    try:  # best-effort cache; a read-only FS (e.g. Streamlit Cloud) still serves fresh odds
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps([g.model_dump(mode="json") for g in games_raw]))
+    except OSError:
+        pass
     return transform_odds_games(games_raw), False

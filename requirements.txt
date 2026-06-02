@@ -1,0 +1,10 @@
+# Streamlit Community Cloud installs from this file (it doesn't read pyproject/uv.lock).
+# Local dev still uses `uv sync`; keep these in rough sync with pyproject.toml.
+httpx>=0.27
+pydantic>=2.7
+pydantic-settings>=2.3
+cryptography>=42.0
+streamlit>=1.36
+pandas>=2.2
+altair>=5.0
+rich>=13.7
