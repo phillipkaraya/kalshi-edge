@@ -10,6 +10,7 @@ Run: ``uv run streamlit run src/kalshi_edge/ui/app.py``
 
 from __future__ import annotations
 
+import hmac
 from datetime import UTC, datetime
 from typing import Literal, cast
 
@@ -68,6 +69,47 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+
+def _require_password() -> None:
+    """Gate the board behind a shared password stored in Streamlit Secrets.
+
+    The password lives only in secrets (never in code/git). If none is configured
+    the app stays open so local dev and the pre-configuration window aren't locked
+    out; once ``app_password`` is set in Streamlit Secrets it is enforced on every
+    visitor. Comparison is constant-time to avoid a timing side channel.
+    """
+    try:
+        configured = str(st.secrets["app_password"]).strip()
+    except Exception:  # noqa: BLE001 -- no secrets file/key (e.g. local dev) -> open
+        configured = ""
+    if not configured or st.session_state.get("_authed"):
+        return
+    st.markdown(
+        "<div style='max-width:400px;margin:13vh auto .2rem;text-align:center;'>"
+        "<div style='font-size:1.8rem;font-weight:800;letter-spacing:-.02em;'>"
+        "◆ Intellovate<span style='color:#22d3ee;'>Bets</span></div>"
+        "<div style='color:#8b95a5;font-size:.85rem;margin:.45rem 0 1.1rem;'>"
+        "Enter the access password to continue.</div></div>",
+        unsafe_allow_html=True,
+    )
+    _left, mid, _right = st.columns([1, 1.4, 1])
+    with mid:
+        entered = st.text_input(
+            "Access password",
+            type="password",
+            label_visibility="collapsed",
+            placeholder="Access password",
+        )
+        if entered:
+            if hmac.compare_digest(entered, configured):
+                st.session_state["_authed"] = True
+                st.rerun()
+            st.error("Incorrect password.")
+    st.stop()
+
+
+_require_password()
 
 
 def _resolve_games(settings: Settings) -> tuple[list, bool]:
