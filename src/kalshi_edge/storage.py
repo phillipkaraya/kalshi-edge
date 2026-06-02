@@ -22,7 +22,9 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
     """Open (creating dirs + schema as needed) a connection to the local store."""
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
+    # Autocommit mode: the engine drives explicit BEGIN IMMEDIATE transactions for an
+    # atomic read-check-record, so caps hold even if two passes overlap.
+    conn = sqlite3.connect(str(path), isolation_level=None)
     conn.row_factory = sqlite3.Row
     # Hardening: WAL + a busy timeout reduce read/write contention between passes.
     conn.execute("PRAGMA journal_mode=WAL")

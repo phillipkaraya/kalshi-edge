@@ -29,10 +29,12 @@ none affect paper-mode correctness, but each must be addressed before live capit
    *actual* filled count. Until then, live exposure caps see optimistic state.
 2. **Count resting/pending orders toward exposure.** Exposure aggregates filter
    `status='filled'`; a resting limit order won't count, so caps could oversize.
-3. **Full transaction around read→check→insert** (`engine.submit`). WAL + busy
-   timeout are now enabled (partial). Still need `BEGIN IMMEDIATE` wrapping the
-   read+gate+insert (requires ledger writes to defer their commit) so two concurrent
-   passes can't both clear the caps.
+3. ~~Full transaction around read→check→insert~~ — **DONE.** `engine.submit` wraps
+   read+gate+record in `BEGIN IMMEDIATE` on an autocommit connection (`record_order`
+   defers its commit); the wrapper commits once / rolls back on error, so two concurrent
+   passes serialize on the write lock. Test: `test_submit_commit_persists_across_connections`.
+   (Note: demo/live hold the lock across the order network call — fine for a single-user
+   tool; the reserve-pending pattern in #1 supersedes this when live trading is built.)
 4. ~~Wire `daily_pnl` from the ledger~~ — **DONE** (realized daily PnL computed in `submit`).
 5. **Reserve the order's own fee in cap math.** `room_*` divides by price without
    reserving the new fee, and the `+1e-9` floor can oversize by ~1 contract. Size

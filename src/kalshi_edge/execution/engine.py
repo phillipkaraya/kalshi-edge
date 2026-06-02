@@ -81,6 +81,22 @@ class ExecutionEngine:
         self.mode = settings.execution_mode
 
     def submit(self, ticket: OrderTicket, *, daily_pnl: float | None = None) -> ExecutionResult:
+        """Atomically check risk and record the order.
+
+        The read -> risk.check -> record runs inside one BEGIN IMMEDIATE transaction, so
+        two overlapping passes can't both clear the caps and oversize a position: the
+        second blocks until the first commits, then re-reads fresh exposure.
+        """
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            result = self._submit_locked(ticket, daily_pnl)
+        except Exception:
+            self.conn.rollback()
+            raise
+        self.conn.commit()
+        return result
+
+    def _submit_locked(self, ticket: OrderTicket, daily_pnl: float | None) -> ExecutionResult:
         held = position_contracts(self.conn, mode=self.mode, ticker=ticket.ticker, side=ticket.side)
         exposure = total_exposure(self.conn, mode=self.mode)
         event_exp = event_exposure(self.conn, mode=self.mode, event_ticker=ticket.event_ticker)
@@ -170,4 +186,5 @@ class ExecutionEngine:
                 ev_net=ticket.ev_net,
                 kalshi_order_id=kalshi_order_id,
             ),
+            commit=False,  # the submit() transaction wrapper owns the commit/rollback
         )

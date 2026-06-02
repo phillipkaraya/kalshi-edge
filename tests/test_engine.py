@@ -137,3 +137,16 @@ def test_daily_loss_cap_blocks_after_settled_loss(tmp_path) -> None:
     res = engine.submit(TICKET)  # daily_pnl auto-computed from the ledger
     assert res.status == "rejected"
     assert "daily loss" in res.reason
+
+
+def test_submit_commit_persists_across_connections(tmp_path) -> None:
+    # The BEGIN IMMEDIATE wrapper must actually COMMIT: a fresh connection to the same
+    # db file has to see the filled order (not just the connection that wrote it).
+    from kalshi_edge.execution.ledger import get_orders
+
+    engine = _engine(tmp_path, "paper")
+    assert engine.submit(TICKET).status == "filled"
+    engine.conn.close()
+    fresh = connect(tmp_path / "t.db")
+    assert len(get_orders(fresh, mode="paper", status="filled")) == 1
+    fresh.close()

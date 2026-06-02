@@ -34,7 +34,7 @@ class Position:
     avg_price: float
 
 
-def record_order(conn: sqlite3.Connection, rec: OrderRecord) -> int:
+def record_order(conn: sqlite3.Connection, rec: OrderRecord, *, commit: bool = True) -> int:
     cur = conn.execute(
         """INSERT INTO orders
            (ts, mode, ticker, event_ticker, side, action, count, price, fee,
@@ -58,7 +58,8 @@ def record_order(conn: sqlite3.Connection, rec: OrderRecord) -> int:
             rec.kalshi_order_id,
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return int(cur.lastrowid or 0)
 
 
