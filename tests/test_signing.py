@@ -47,9 +47,10 @@ def test_auth_headers_signature_verifies(tmp_path) -> None:
     client.close()
 
 
-def test_no_key_when_path_is_empty() -> None:
-    # A blank KALSHI_PRIVATE_KEY_PATH in .env coerces to Path("") == Path(".") (a dir);
-    # the client must treat that as "no credentials", not crash.
-    client = KalshiClient(Settings(kalshi_private_key_path=Path("")))
-    assert not client.authenticated
-    client.close()
+def test_no_key_when_path_empty_or_missing(tmp_path) -> None:
+    # A blank path coerces to Path(".") (a dir), and a configured-but-missing file must
+    # also be treated as "no credentials" -> the read-only board must never crash.
+    for bad in (Path(""), tmp_path / "missing.pem"):
+        client = KalshiClient(Settings(kalshi_private_key_path=bad))
+        assert not client.authenticated
+        client.close()

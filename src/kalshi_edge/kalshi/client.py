@@ -42,8 +42,13 @@ class KalshiClient:
         # An empty .env value coerces to Path("") == Path(".") (a dir) -> treat as unset.
         if path is None or str(path) in ("", "."):
             return None
-        pem = Path(path).expanduser().read_bytes()
-        return cast(RSAPrivateKey, serialization.load_pem_private_key(pem, password=None))
+        pem_path = Path(path).expanduser()
+        # Configured but missing: treat as no creds so the read-only board never crashes.
+        if not pem_path.is_file():
+            return None
+        return cast(
+            RSAPrivateKey, serialization.load_pem_private_key(pem_path.read_bytes(), password=None)
+        )
 
     @property
     def authenticated(self) -> bool:
