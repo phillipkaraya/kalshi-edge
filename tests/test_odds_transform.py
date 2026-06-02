@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from kalshi_edge.data.odds import OddsGame, transform_odds_games
@@ -57,3 +59,15 @@ def test_transform_devigs_each_book() -> None:
     assert go.home_book_probs[0] == pytest.approx(0.5794, abs=2e-3)
     # Each book's devigged pair sums to 1.0.
     assert go.home_book_probs[0] + go.away_book_probs[0] == pytest.approx(1.0)
+
+
+def test_get_game_odds_cached_reads_fresh_cache(tmp_path) -> None:
+    from kalshi_edge.config import Settings
+    from kalshi_edge.data.odds import get_game_odds_cached
+
+    cache = tmp_path / "odds.json"
+    cache.write_text(json.dumps(PAYLOAD))  # a fresh cache file -> no network call
+    games, from_cache = get_game_odds_cached(Settings(odds_api_key="x"), cache_path=cache)
+    assert from_cache is True
+    assert len(games) == 1
+    assert games[0].home == "NYK"

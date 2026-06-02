@@ -21,7 +21,7 @@ from kalshi_edge import storage
 from kalshi_edge.config import Settings
 from kalshi_edge.data.fixtures import fixture_game_odds
 from kalshi_edge.data.matcher import fair_value_for_market
-from kalshi_edge.data.odds import OddsApiClient
+from kalshi_edge.data.odds import get_game_odds_cached
 from kalshi_edge.kalshi.client import KalshiClient
 from kalshi_edge.kalshi.markets import fetch_markets, tradeable_markets
 from kalshi_edge.model.arbitrage import two_sided_lock
@@ -42,7 +42,8 @@ def _resolve_games(settings: Settings) -> tuple[list, bool]:
     if not settings.has_odds_source:
         return fixture_game_odds(), True
     try:
-        return OddsApiClient(settings).get_game_odds(), False
+        games, _from_cache = get_game_odds_cached(settings)
+        return games, False
     except Exception:  # noqa: BLE001 -- any odds failure -> safe demo fallback
         return fixture_game_odds(), True
 

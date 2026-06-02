@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     odds_api_key: str | None = None
     balldontlie_api_key: str | None = None
     data_tier: Literal["free", "paid"] = "free"
+    odds_cache_ttl_seconds: int = 3600  # shared file-cache TTL for Odds API (protects free quota)
 
     # --- Edge / sizing (Slice 1+) -------------------------------------------
     bankroll: float = 1000.0  # paper bankroll for Kelly sizing

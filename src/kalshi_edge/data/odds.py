@@ -8,8 +8,11 @@ falls back to the demo fixture.
 
 from __future__ import annotations
 
+import json
+import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 import httpx
 from pydantic import BaseModel, ConfigDict
@@ -114,3 +117,30 @@ class OddsApiClient:
 
     def get_game_odds(self) -> list[GameOdds]:
         return transform_odds_games(self.get_raw_nba())
+
+
+def get_game_odds_cached(
+    settings: Settings | None = None,
+    *,
+    cache_path: str | Path = "data/odds_cache.json",
+) -> tuple[list[GameOdds], bool]:
+    """Odds with a shared on-disk cache so the board and the scheduled paper pass
+    share one fetch within the TTL (protects the Odds API free-tier quota).
+
+    Returns ``(games, from_cache)``. Serves a stale cache if a live fetch fails.
+    """
+    settings = settings or get_settings()
+    path = Path(cache_path)
+    if path.exists() and (time.time() - path.stat().st_mtime) < settings.odds_cache_ttl_seconds:
+        raw = [OddsGame.model_validate(g) for g in json.loads(path.read_text())]
+        return transform_odds_games(raw), True
+    try:
+        games_raw = OddsApiClient(settings).get_raw_nba()
+    except Exception:
+        if path.exists():  # serve stale rather than fail
+            raw = [OddsGame.model_validate(g) for g in json.loads(path.read_text())]
+            return transform_odds_games(raw), True
+        raise
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps([g.model_dump(mode="json") for g in games_raw]))
+    return transform_odds_games(games_raw), False

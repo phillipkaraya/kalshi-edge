@@ -3,8 +3,7 @@ __pycache__/
 *.pyc
 .env
 *.pem
-data/*.db
-data/*.sqlite
+data/
 .streamlit/secrets.toml
 .DS_Store
 .pytest_cache/
