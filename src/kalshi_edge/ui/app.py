@@ -281,7 +281,7 @@ actionable = int((df["Bet"] != "—").sum())
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Markets", len(df))
 c2.metric("Actionable edges", actionable)
-c3.metric("Priced by", "DEMO" if fixture_mode else "live odds")
+c3.metric("Priced by", "DEMO" if fixture_mode else "LIVE")
 c4.metric("Σ contracts", int(df["Size"].sum()))
 
 st.subheader("Top edges")
