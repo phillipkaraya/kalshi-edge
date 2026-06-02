@@ -39,7 +39,8 @@ class KalshiClient:
 
     def _load_key(self) -> RSAPrivateKey | None:
         path = self.settings.kalshi_private_key_path
-        if not path:
+        # An empty .env value coerces to Path("") == Path(".") (a dir) -> treat as unset.
+        if path is None or str(path) in ("", "."):
             return None
         pem = Path(path).expanduser().read_bytes()
         return cast(RSAPrivateKey, serialization.load_pem_private_key(pem, password=None))

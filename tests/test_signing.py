@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from pathlib import Path
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
@@ -43,4 +44,12 @@ def test_auth_headers_signature_verifies(tmp_path) -> None:
         padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH),
         hashes.SHA256(),
     )
+    client.close()
+
+
+def test_no_key_when_path_is_empty() -> None:
+    # A blank KALSHI_PRIVATE_KEY_PATH in .env coerces to Path("") == Path(".") (a dir);
+    # the client must treat that as "no credentials", not crash.
+    client = KalshiClient(Settings(kalshi_private_key_path=Path("")))
+    assert not client.authenticated
     client.close()
