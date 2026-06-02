@@ -1,10 +1,11 @@
-"""Kalshi Edge -- NBA Edge Board (Slice 1).
+"""Kalshi Edge -- NBA Edge Board (Hybrid terminal).
 
 For every live Kalshi NBA market we compute an independent fair value (devigged
 sportsbook consensus), the edge vs the market price, the fee-aware EV, and a
-fractional-Kelly size -- then rank by EV so the best opportunities surface first.
-Without an odds API key it runs on clearly-labelled DEMO odds so the full board
-still renders. Run: ``uv run streamlit run src/kalshi_edge/ui/app.py``
+fractional-Kelly size. The board surfaces the best opportunities as cards, maps
+every market on a fair-vs-market scatter, and lists them in a color-graded table.
+Without an odds API key it runs on clearly-labelled DEMO odds.
+Run: ``uv run streamlit run src/kalshi_edge/ui/app.py``
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Literal, cast
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -30,6 +32,9 @@ st.set_page_config(page_title="Kalshi Edge -- NBA", page_icon="🏀", layout="wi
 
 SPREAD_LIQUID = 0.03
 _NEG_INF = float("-inf")
+_GREEN = "#22c55e"
+_RED = "#ef4444"
+_GREY = "#6b7280"
 
 
 def _resolve_games(settings: Settings) -> tuple[list, bool]:
@@ -107,7 +112,89 @@ def analyze(
     return df, records, fixture_mode
 
 
-# --- Sidebar ----------------------------------------------------------------
+# --- presentation helpers ---------------------------------------------------
+def _cell_color(value: float | None, scale: float) -> str:
+    """Green for positive, red for negative, alpha by magnitude. For Styler.map."""
+    if value is None or pd.isna(value):
+        return ""
+    v = float(value)
+    if v == 0.0:
+        return ""
+    alpha = min(0.6, 0.15 + abs(v) / scale)
+    rgb = "34,197,94" if v > 0 else "239,68,68"
+    return f"background-color: rgba({rgb},{alpha:.2f})"
+
+
+def _style_table(frame: pd.DataFrame) -> pd.io.formats.style.Styler:
+    return frame.style.map(lambda v: _cell_color(v, 8.0), subset=["EV ¢/ct"]).map(
+        lambda v: _cell_color(v, 14.0), subset=["Gap pp"]
+    )
+
+
+def _render_top_edges(frame: pd.DataFrame) -> None:
+    edges = frame[frame["Bet"] != "—"].head(4)
+    if edges.empty:
+        st.info("No actionable edges clear the EV threshold right now.")
+        return
+    for col, (_, r) in zip(st.columns(len(edges)), edges.iterrows(), strict=False):
+        with col, st.container(border=True):
+            side = r["Bet"]
+            color = _GREEN if side == "YES" else _RED
+            game = (r["Game"] or "")[:46]
+            st.markdown(f"**{game}**")
+            st.markdown(
+                f"<span style='color:{color};font-weight:700'>BET {side}</span>"
+                f" · {r['Team (Yes)']}",
+                unsafe_allow_html=True,
+            )
+            st.metric("EV ¢/contract", f"{r['EV ¢/ct']:.2f}", delta=f"{r['Gap pp']:+.1f} pp gap")
+            st.caption(
+                f"size {int(r['Size'])} · conf {r['Conf']:.2f} · "
+                f"mkt {r['Mkt %']:.0f}% → fair {r['Fair %']:.0f}%"
+            )
+
+
+def _edge_map(frame: pd.DataFrame) -> alt.LayerChart | None:
+    d = frame.dropna(subset=["Mkt %", "Fair %"]).rename(
+        columns={"Mkt %": "market", "Fair %": "fair", "EV ¢/ct": "ev"}
+    )
+    if d.empty:
+        return None
+    diagonal = (
+        alt.Chart(pd.DataFrame({"market": [0, 100], "fair": [0, 100]}))
+        .mark_line(strokeDash=[4, 4], color=_GREY)
+        .encode(x="market", y="fair")
+    )
+    points = (
+        alt.Chart(d)
+        .mark_circle(opacity=0.85)
+        .encode(
+            x=alt.X("market", title="Market implied %"),
+            y=alt.Y("fair", title="Fair value %"),
+            color=alt.Color(
+                "Bet",
+                scale=alt.Scale(domain=["YES", "NO", "—"], range=[_GREEN, _RED, _GREY]),
+                legend=alt.Legend(title="Bet"),
+            ),
+            size=alt.Size("Vol", legend=None),
+            tooltip=["Game", "Bet", "market", "fair", "ev", "Size"],
+        )
+    )
+    return (diagonal + points).properties(height=300)
+
+
+# --- header -----------------------------------------------------------------
+st.markdown(
+    "<div style='display:flex;align-items:baseline;gap:12px;border-bottom:1px solid #30363d;"
+    "padding-bottom:6px;margin-bottom:10px'>"
+    "<span style='font-size:1.7rem;font-weight:800;letter-spacing:1px'>🏀 KALSHI EDGE</span>"
+    f"<span style='color:{_GREEN};font-weight:700'>NBA</span>"
+    "<span style='color:#8b949e;font-size:0.85rem;margin-left:auto'>"
+    "fair value vs market · fee-aware EV · fractional-Kelly sizing</span></div>",
+    unsafe_allow_html=True,
+)
+
+# --- sidebar ----------------------------------------------------------------
 base = Settings()
 st.sidebar.title("🏀 Kalshi Edge")
 env = st.sidebar.selectbox("Environment", ["prod", "demo"], index=0)
@@ -129,13 +216,7 @@ st.sidebar.caption(
     "otherwise the board uses labelled DEMO odds."
 )
 
-# --- Main -------------------------------------------------------------------
-st.title("NBA Edge Board")
-st.caption(
-    "Independent fair value (devigged consensus) vs Kalshi's price -> edge, fee-aware EV, "
-    "and fractional-Kelly size. Ranked by EV."
-)
-
+# --- main -------------------------------------------------------------------
 try:
     df, records, fixture_mode = analyze(
         env, series, bankroll, kelly_frac, max_frac, min_ev, base.fee_multiplier
@@ -159,38 +240,47 @@ c1, c2, c3, c4 = st.columns(4)
 c1.metric("Markets", len(df))
 c2.metric("Actionable edges", actionable)
 c3.metric("Priced by", "DEMO" if fixture_mode else "live odds")
-c4.metric("Σ suggested contracts", int(df["Size"].sum()))
+c4.metric("Σ contracts", int(df["Size"].sum()))
 
-if st.button("💾 Snapshot analysis to DB"):
-    settings = Settings(kalshi_env=cast(Literal["prod", "demo"], env))
-    conn = storage.connect(settings.db_path)
-    try:
-        for market, fv, edge in records:
-            storage.log_snapshot(conn, market)
-            if fv is not None and edge is not None:
-                storage.log_signal(conn, market.ticker, market.implied_prob, fv, edge)
-        st.success(
-            f"Logged {len(records)} snapshots. Totals — "
-            f"snapshots: {storage.count_rows(conn, 'market_snapshots')}, "
-            f"signals: {storage.count_rows(conn, 'signals')}."
-        )
-    finally:
-        conn.close()
+st.subheader("Top edges")
+_render_top_edges(df)
 
-st.dataframe(
-    df,
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "Mkt %": st.column_config.NumberColumn(format="%.1f%%"),
-        "Fair %": st.column_config.NumberColumn(format="%.1f%%"),
-        "Gap pp": st.column_config.NumberColumn(
-            format="%+.1f", help="Fair minus market, YES perspective"
-        ),
-        "EV ¢/ct": st.column_config.NumberColumn(
-            format="%.2f", help="Net EV per contract after fees"
-        ),
-        "Conf": st.column_config.ProgressColumn(min_value=0.0, max_value=1.0, format="%.2f"),
-        "Vol": st.column_config.NumberColumn(format="%.0f"),
-    },
-)
+left, right = st.columns([3, 2])
+with left:
+    st.subheader("Edge board")
+    st.dataframe(
+        _style_table(df),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Mkt %": st.column_config.NumberColumn(format="%.1f%%"),
+            "Fair %": st.column_config.NumberColumn(format="%.1f%%"),
+            "Gap pp": st.column_config.NumberColumn(format="%+.1f", help="Fair minus market (YES)"),
+            "EV ¢/ct": st.column_config.NumberColumn(format="%.2f", help="Net EV per contract"),
+            "Conf": st.column_config.ProgressColumn(min_value=0.0, max_value=1.0, format="%.2f"),
+            "Vol": st.column_config.NumberColumn(format="%.0f"),
+        },
+    )
+with right:
+    st.subheader("Edge map")
+    chart = _edge_map(df)
+    if chart is not None:
+        st.altair_chart(chart, use_container_width=True)
+    st.caption("Dashed line = fair ≈ market. Above = YES underpriced; below = overpriced.")
+
+with st.expander("⚙ Data / logging"):
+    if st.button("💾 Snapshot analysis to DB"):
+        settings = Settings(kalshi_env=cast(Literal["prod", "demo"], env))
+        conn = storage.connect(settings.db_path)
+        try:
+            for market, fv, edge in records:
+                storage.log_snapshot(conn, market)
+                if fv is not None and edge is not None:
+                    storage.log_signal(conn, market.ticker, market.implied_prob, fv, edge)
+            st.success(
+                f"Logged {len(records)} snapshots. Totals — "
+                f"snapshots: {storage.count_rows(conn, 'market_snapshots')}, "
+                f"signals: {storage.count_rows(conn, 'signals')}."
+            )
+        finally:
+            conn.close()
