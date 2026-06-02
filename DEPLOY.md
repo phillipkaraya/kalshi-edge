@@ -1,13 +1,13 @@
-# Deploying the Edge Board (free)
+# Deploying IntellovateBets (free)
 
 Streamlit **can't** run on Vercel (Vercel is for serverless / Next.js / static). The
 free, purpose-built host is **Streamlit Community Cloud**.
 
 ## Steps (≈3 min)
 1. Go to **https://share.streamlit.io** and sign in with the GitHub account that can
-   access `IntellovateAI/kalshi-edge`.
+   access `financewithphil/kalshi-edge`.
 2. **Create app → Deploy a public/private app from a repo:**
-   - Repository: `IntellovateAI/kalshi-edge`
+   - Repository: `financewithphil/kalshi-edge`
    - Branch: `main`
    - **Main file path: `streamlit_app.py`**
 3. **Advanced settings → Secrets**, paste:
@@ -18,7 +18,7 @@ free, purpose-built host is **Streamlit Community Cloud**.
    Streamlit exposes these as environment variables, which the app's `Settings` reads.
    **Do NOT add the Kalshi key** — the hosted board is read-only and never trades.
 4. **Deploy.** First build installs `requirements.txt` (~2 min), then the board is live
-   at a `*.streamlit.app` URL.
+   at **https://intellovatebets.streamlit.app**.
 
 ## What the hosted app is (and isn't)
 - A **live, shareable dashboard**: real Kalshi NBA markets + devigged fair value + edges.

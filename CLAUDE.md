@@ -1,8 +1,10 @@
-# Kalshi Edge
+# IntellovateBets
 
 NBA prediction-market decision engine for Kalshi: devig the sportsbook consensus,
 find where Kalshi's price disagrees, paper-trade the edge, then auto-trade behind
-a measured consistency gate.
+a measured consistency gate. Live board: https://intellovatebets.streamlit.app
+
+> Product/display name is **IntellovateBets**. The Python package and repo stay `kalshi_edge` / `kalshi-edge` (import paths and directory names are unchanged).
 
 ## Stack
 - Python 3.12, `uv` + hatchling, `src/` layout
