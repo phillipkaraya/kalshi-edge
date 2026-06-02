@@ -1,4 +1,4 @@
-"""Kalshi Edge -- NBA Edge Board (Hybrid terminal).
+"""IntellovateBets -- NBA Edge Board.
 
 For every live Kalshi NBA market we compute an independent fair value (devigged
 sportsbook consensus), the edge vs the market price, the fee-aware EV, and a
@@ -28,13 +28,46 @@ from kalshi_edge.model.arbitrage import two_sided_lock
 from kalshi_edge.model.edge import evaluate_edge
 from kalshi_edge.model.momentum import momentum_signal
 
-st.set_page_config(page_title="Kalshi Edge -- NBA", page_icon="🏀", layout="wide")
+st.set_page_config(page_title="IntellovateBets — NBA Edge", page_icon="📈", layout="wide")
 
 SPREAD_LIQUID = 0.03
 _NEG_INF = float("-inf")
-_GREEN = "#22c55e"
-_RED = "#ef4444"
+_CYAN = "#22d3ee"  # brand accent — electric cyan
+_GREEN = "#22c55e"  # positive edge / YES (P&L semantics kept)
+_RED = "#ef4444"  # negative edge / NO
 _GREY = "#6b7280"
+
+# --- sleek fintech-SaaS styling: Inter + JetBrains Mono, cyan accent, card depth ---
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap');
+    html, body, .stApp, [data-testid="stAppViewContainer"] { font-family: 'Inter', sans-serif; }
+    #MainMenu, footer, header[data-testid="stHeader"] { display: none; }
+    .block-container { padding-top: 2.2rem; max-width: 1400px; }
+    [data-testid="stMetric"] {
+        background: #141a24; border: 1px solid #1f2a37; border-radius: 14px;
+        padding: 14px 18px; box-shadow: 0 1px 3px rgba(0,0,0,.45);
+    }
+    [data-testid="stMetricValue"] { font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+    [data-testid="stMetricLabel"] p {
+        color: #8b95a5; font-size: .72rem; letter-spacing: .06em; text-transform: uppercase;
+    }
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        background: #141a24; border: 1px solid #1f2a37; border-radius: 14px;
+        transition: border-color .15s ease, transform .15s ease;
+    }
+    [data-testid="stVerticalBlockBorderWrapper"]:hover {
+        border-color: rgba(34,211,238,.45); transform: translateY(-2px);
+    }
+    [data-testid="stDataFrame"] { font-family: 'JetBrains Mono', monospace; }
+    h1, h2, h3 { font-weight: 700; letter-spacing: -.015em; }
+    .stMarkdown a { color: #22d3ee; }
+    [data-testid="stSidebar"] { background: #0d1219; border-right: 1px solid #1f2a37; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 def _resolve_games(settings: Settings) -> tuple[list, bool]:
@@ -186,18 +219,26 @@ def _edge_map(frame: pd.DataFrame) -> alt.LayerChart | None:
 
 # --- header -----------------------------------------------------------------
 st.markdown(
-    "<div style='display:flex;align-items:baseline;gap:12px;border-bottom:1px solid #30363d;"
-    "padding-bottom:6px;margin-bottom:10px'>"
-    "<span style='font-size:1.7rem;font-weight:800;letter-spacing:1px'>🏀 KALSHI EDGE</span>"
-    f"<span style='color:{_GREEN};font-weight:700'>NBA</span>"
-    "<span style='color:#8b949e;font-size:0.85rem;margin-left:auto'>"
-    "fair value vs market · fee-aware EV · fractional-Kelly sizing</span></div>",
+    f"""<div style="display:flex;align-items:center;gap:14px;padding:0 0 16px;
+        border-bottom:1px solid #1f2a37;margin-bottom:20px">
+      <span style="font-size:1.4rem;color:{_CYAN};line-height:1">◆</span>
+      <span style="font-size:1.5rem;font-weight:800;letter-spacing:-.02em;color:#f0f4f8;line-height:1">
+        Intellovate<span style="color:{_CYAN}">Bets</span></span>
+      <span style="color:#7d8aa0;font-weight:600;font-size:.78rem;border:1px solid #2a3645;
+        border-radius:6px;padding:3px 8px;line-height:1">NBA</span>
+      <span style="color:#8b95a5;font-size:.85rem;margin-left:auto;font-weight:500">
+        model-vs-market edge engine · fee-aware EV · fractional-Kelly</span>
+    </div>""",
     unsafe_allow_html=True,
 )
 
 # --- sidebar ----------------------------------------------------------------
 base = Settings()
-st.sidebar.title("🏀 Kalshi Edge")
+st.sidebar.markdown(
+    f"<div style='font-size:1.15rem;font-weight:800;letter-spacing:-.01em;padding:2px 0 8px'>"
+    f"<span style='color:{_CYAN}'>◆</span> Intellovate<span style='color:{_CYAN}'>Bets</span></div>",
+    unsafe_allow_html=True,
+)
 env = st.sidebar.selectbox("Environment", ["prod", "demo"], index=0)
 series_input = st.sidebar.text_input("Series tickers (comma-sep)", ", ".join(base.kalshi_series))
 series = tuple(s.strip() for s in series_input.split(",") if s.strip())
