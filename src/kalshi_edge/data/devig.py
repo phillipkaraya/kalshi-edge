@@ -20,6 +20,8 @@ def decimal_to_prob(decimal_odds: float) -> float:
 
 def american_to_prob(odds: int) -> float:
     """Implied (raw, vig-inclusive) probability from American odds."""
+    if odds == 0:
+        raise ValueError("American odds cannot be 0")
     if odds < 0:
         return -odds / (-odds + 100.0)
     return 100.0 / (odds + 100.0)
@@ -32,9 +34,9 @@ def overround(raw_probs: list[float]) -> float:
 
 def devig_proportional(raw_probs: list[float]) -> list[float]:
     """Remove vig by normalising raw probabilities to sum to 1.0 (multiplicative)."""
+    if not raw_probs or any(p <= 0.0 for p in raw_probs):
+        raise ValueError("each raw probability must be positive")
     total = sum(raw_probs)
-    if total <= 0.0:
-        raise ValueError("raw probabilities must sum to a positive number")
     return [p / total for p in raw_probs]
 
 

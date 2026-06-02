@@ -17,6 +17,10 @@ none affect paper-mode correctness, but each must be addressed before live capit
   positive ROI on a small sample can't arm live.
 - **Calibration by bin-mean** (not midpoint) to de-bias calibration error.
 - **Per-game exposure cap** — limits total spend per event (conservative).
+- **Daily-loss cap wired** — realized daily PnL computed from settled trades and enforced
+  in `submit` (was inert / always 0). Test: `test_daily_loss_cap_blocks_after_settled_loss`.
+- **Devig input validation** — `american_to_prob(0)` and non-positive raw probs now raise.
+- **WAL + busy timeout** on the SQLite connection (partial mitigation of the write race).
 
 ## Remaining before live (deferred)
 1. **Order/fill reconciliation (was: records "filled" on acceptance).** demo/live
@@ -25,12 +29,11 @@ none affect paper-mode correctness, but each must be addressed before live capit
    *actual* filled count. Until then, live exposure caps see optimistic state.
 2. **Count resting/pending orders toward exposure.** Exposure aggregates filter
    `status='filled'`; a resting limit order won't count, so caps could oversize.
-3. **Transaction around read→check→insert** (`engine.submit`). Default SQLite, no
-   WAL, no `BEGIN IMMEDIATE` — concurrent passes can each pass the caps. Wrap the
-   read+gate+insert in one immediate transaction; enable WAL + busy timeout.
-4. **Wire `daily_pnl` from the ledger.** It defaults to `0.0` and the UI never
-   passes it, so the daily-loss cap is currently inert. Compute realized daily PnL
-   from settled fills inside `submit`.
+3. **Full transaction around read→check→insert** (`engine.submit`). WAL + busy
+   timeout are now enabled (partial). Still need `BEGIN IMMEDIATE` wrapping the
+   read+gate+insert (requires ledger writes to defer their commit) so two concurrent
+   passes can't both clear the caps.
+4. ~~Wire `daily_pnl` from the ledger~~ — **DONE** (realized daily PnL computed in `submit`).
 5. **Reserve the order's own fee in cap math.** `room_*` divides by price without
    reserving the new fee, and the `+1e-9` floor can oversize by ~1 contract. Size
    so `n*price + order_fee(n) + committed <= cap`.
@@ -39,7 +42,6 @@ none affect paper-mode correctness, but each must be addressed before live capit
    bet, nor credit hedges. Map opposite sides to a common per-outcome notional.
 7. **Verify Kalshi's order-body schema** (`client.create_order`) against the live
    API before the first real order; do a credentialed dry-run on the demo sandbox.
-8. **Input validation in devig** — `american_to_prob(0)`→1.0 and a single zero in
-   `devig_proportional` aren't guarded; validate probabilities ∈ (0,1) upstream.
+8. ~~Input validation in devig~~ — **DONE** (`american_to_prob(0)` and non-positive raw probs raise).
 9. **Live kill switch as a real-time abort** — currently read from `Settings` at
    construction; back it with a polled file/row so it halts a running loop instantly.

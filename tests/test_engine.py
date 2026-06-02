@@ -108,3 +108,32 @@ def test_demo_places_on_demo_env(tmp_path) -> None:
     res = engine.submit(TICKET)
     assert res.status == "filled"
     assert "demo order placed" in res.reason
+
+
+def test_daily_loss_cap_blocks_after_settled_loss(tmp_path) -> None:
+    from kalshi_edge.backtest.settlement import record_settlement
+    from kalshi_edge.execution.ledger import OrderRecord, record_order
+
+    settings = Settings(execution_mode="paper")  # type: ignore[arg-type]
+    conn = connect(tmp_path / "t.db")
+    # A filled paper buy that LOST today: 300 @ $0.50 -> -$150 realized (< the $100 cap).
+    record_order(
+        conn,
+        OrderRecord(
+            mode="paper",
+            ticker="KX-G1-A",
+            event_ticker="KX-G1",
+            side="yes",
+            action="buy",
+            count=300,
+            price=0.50,
+            fee=0.0,
+            status="filled",
+        ),
+    )
+    record_settlement(conn, ticker="KX-G1-A", event_ticker="KX-G1", result="no", last_price=0.0)
+    risk = RiskManager(RiskConfig.from_settings(settings), settings.bankroll)
+    engine = ExecutionEngine(settings, conn, risk, None)
+    res = engine.submit(TICKET)  # daily_pnl auto-computed from the ledger
+    assert res.status == "rejected"
+    assert "daily loss" in res.reason

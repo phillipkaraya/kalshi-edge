@@ -26,6 +26,13 @@ def test_american_to_prob() -> None:
     assert american_to_prob(+150) == pytest.approx(0.40)
 
 
+def test_invalid_inputs_raise() -> None:
+    with pytest.raises(ValueError):
+        american_to_prob(0)
+    with pytest.raises(ValueError):
+        devig_two_way(0.5, 0.0)  # a zero raw probability is invalid
+
+
 def test_devig_two_way_sums_to_one() -> None:
     home_raw = decimal_to_prob(1.5)  # 0.6667
     away_raw = decimal_to_prob(2.5)  # 0.4000

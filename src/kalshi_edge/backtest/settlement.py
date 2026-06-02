@@ -67,3 +67,19 @@ def build_settled_trades(conn: sqlite3.Connection, *, mode: str) -> list[Settled
         )
         for r in rows
     ]
+
+
+def realized_daily_pnl(conn: sqlite3.Connection, *, mode: str, on_date: str) -> float:
+    """Realized PnL of trades that SETTLED on ``on_date`` (YYYY-MM-DD); for the daily-loss cap."""
+    rows = conn.execute(
+        """SELECT o.side, o.price, o.count, o.fee, s.result
+           FROM orders o JOIN settlements s ON o.ticker = s.ticker
+           WHERE o.mode = ? AND o.status = 'filled' AND substr(s.settled_ts, 1, 10) = ?""",
+        (mode, on_date),
+    ).fetchall()
+    total = 0.0
+    for r in rows:
+        won = (r["side"] == "yes") == (r["result"] == "yes")
+        payoff = float(r["count"]) if won else 0.0
+        total += payoff - (r["count"] * r["price"] + r["fee"])
+    return round(total, 4)

@@ -24,6 +24,9 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
+    # Hardening: WAL + a busy timeout reduce read/write contention between passes.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(SCHEMA_PATH.read_text())
     conn.commit()
     return conn

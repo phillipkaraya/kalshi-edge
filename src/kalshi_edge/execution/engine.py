@@ -2,16 +2,17 @@
 
 paper -> simulated fill at the quoted ask, logged to the ledger (no creds, no money).
 demo  -> real order against Kalshi's sandbox (needs creds).
-live  -> real money; refused unless the risk gate's ``live_enabled`` is True.
+live  -> real money; refused unless the consistency gate passes AND LIVE_ENABLED is set.
 """
 
 from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from ..backtest.consistency import compute_metrics, evaluate_gate
-from ..backtest.settlement import build_settled_trades
+from ..backtest.settlement import build_settled_trades, realized_daily_pnl
 from ..config import Settings
 from ..kalshi.client import KalshiClient
 from ..kalshi.models import Market
@@ -79,10 +80,15 @@ class ExecutionEngine:
         self.client = kalshi_client
         self.mode = settings.execution_mode
 
-    def submit(self, ticket: OrderTicket, *, daily_pnl: float = 0.0) -> ExecutionResult:
+    def submit(self, ticket: OrderTicket, *, daily_pnl: float | None = None) -> ExecutionResult:
         held = position_contracts(self.conn, mode=self.mode, ticker=ticket.ticker, side=ticket.side)
         exposure = total_exposure(self.conn, mode=self.mode)
         event_exp = event_exposure(self.conn, mode=self.mode, event_ticker=ticket.event_ticker)
+        # Realized daily PnL from settled trades drives the daily-loss cap (was inert).
+        if daily_pnl is None:
+            daily_pnl = realized_daily_pnl(
+                self.conn, mode=self.mode, on_date=datetime.now(UTC).date().isoformat()
+            )
         # Live orders must clear the consistency gate computed from real settled paper
         # trades -- enforced HERE on the order path, not just on the Go-Live UI page.
         gate_passed = False
