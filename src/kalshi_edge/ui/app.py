@@ -236,27 +236,33 @@ def _edge_map(frame: pd.DataFrame) -> alt.LayerChart | None:
     )
     if d.empty:
         return None
-    diagonal = (
-        alt.Chart(pd.DataFrame({"market": [0, 100], "fair": [0, 100]}))
-        .mark_line(strokeDash=[4, 4], color=_GREY)
-        .encode(x="market", y="fair")
+    # Altair's mark_*() methods return Self, but they carry an @use_signature decorator
+    # whose Concatenate-based alias leaves that Self unsolved for ty, so a chained
+    # .encode() reads as an attribute on a bare TypeVar. Cast back to the real return
+    # type: runtime behaviour is unchanged, and the chain type-checks.
+    diagonal_mark = cast(
+        "alt.Chart",
+        alt.Chart(pd.DataFrame({"market": [0, 100], "fair": [0, 100]})).mark_line(
+            strokeDash=[4, 4], color=_GREY
+        ),
     )
-    points = (
-        alt.Chart(d)
-        .mark_circle(opacity=0.85)
-        .encode(
-            x=alt.X("market", title="Market implied %"),
-            y=alt.Y("fair", title="Fair value %"),
-            color=alt.Color(
-                "Bet",
-                scale=alt.Scale(domain=["YES", "NO", "—"], range=[_GREEN, _RED, _GREY]),
-                legend=alt.Legend(title="Bet"),
-            ),
-            size=alt.Size("Vol", legend=None),
-            tooltip=["Game", "Bet", "market", "fair", "ev", "Size"],
-        )
+    diagonal = diagonal_mark.encode(x="market", y="fair")
+    points_mark = cast("alt.Chart", alt.Chart(d).mark_circle(opacity=0.85))
+    points = points_mark.encode(
+        x=alt.X("market", title="Market implied %"),
+        y=alt.Y("fair", title="Fair value %"),
+        color=alt.Color(
+            "Bet",
+            scale=alt.Scale(domain=["YES", "NO", "—"], range=[_GREEN, _RED, _GREY]),
+            legend=alt.Legend(title="Bet"),
+        ),
+        size=alt.Size("Vol", legend=None),
+        tooltip=["Game", "Bet", "market", "fair", "ev", "Size"],
     )
-    return (diagonal + points).properties(height=300)
+    # Chart.__add__ is declared LayerChart | FacetChart, but the FacetChart arm only
+    # arises when a faceted chart is layered; two plain Charts always layer to a
+    # LayerChart (verified at runtime), which is what this function promises.
+    return cast("alt.LayerChart", (diagonal + points).properties(height=300))
 
 
 # --- header -----------------------------------------------------------------
