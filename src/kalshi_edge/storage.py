@@ -30,8 +30,25 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(SCHEMA_PATH.read_text())
+    _migrate(conn)
     conn.commit()
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Additive migrations for stores created before a column existed.
+
+    ``CREATE TABLE IF NOT EXISTS`` leaves an existing table untouched, so a new
+    column has to be added explicitly. Each step is guarded by a check against
+    ``PRAGMA table_info`` so this stays idempotent and safe to run on every open.
+    """
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(orders)")}
+    if cols and "filled_count" not in cols:
+        conn.execute("ALTER TABLE orders ADD COLUMN filled_count INTEGER NOT NULL DEFAULT 0")
+        # Rows written before this column existed recorded an immediate fill of the
+        # requested size, so backfill that meaning -- otherwise every historical fill
+        # would read as zero-filled and silently drop out of grading and exposure.
+        conn.execute("UPDATE orders SET filled_count = count WHERE status = 'filled'")
 
 
 def log_snapshot(conn: sqlite3.Connection, market: Market) -> None:

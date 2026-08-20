@@ -47,7 +47,11 @@ CREATE TABLE IF NOT EXISTS orders (
     count           INTEGER NOT NULL,
     price           REAL NOT NULL,
     fee             REAL NOT NULL,
-    status          TEXT NOT NULL,   -- filled | rejected | pending
+    status          TEXT NOT NULL,   -- filled | rejected | pending | canceled
+    -- count = contracts REQUESTED; filled_count = contracts actually confirmed filled.
+    -- paper fills immediately (filled_count = count); demo/live start pending at 0 and
+    -- are reconciled against Kalshi's order endpoint (see execution/reconcile.py).
+    filled_count    INTEGER NOT NULL DEFAULT 0,
     reason          TEXT,
     p_fair          REAL,
     p_market        REAL,

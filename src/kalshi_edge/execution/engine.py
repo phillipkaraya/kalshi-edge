@@ -14,13 +14,14 @@ from datetime import UTC, datetime
 from ..backtest.consistency import compute_metrics, evaluate_gate
 from ..backtest.settlement import build_settled_trades, realized_daily_pnl
 from ..config import Settings
-from ..kalshi.client import KalshiClient
+from ..kalshi.client import KalshiClient, parse_fill
 from ..kalshi.models import Market
 from ..model.edge import EdgeResult
 from ..model.fees import order_fee
 from .ledger import (
     OrderRecord,
-    event_exposure,
+    event_room_contracts,
+    event_worst_case_exposure,
     position_contracts,
     record_order,
     total_exposure,
@@ -43,7 +44,7 @@ class OrderTicket:
 
 @dataclass(frozen=True)
 class ExecutionResult:
-    status: str  # filled | rejected
+    status: str  # filled | pending | rejected
     contracts: int
     reason: str
     order_id: int | None = None
@@ -99,7 +100,11 @@ class ExecutionEngine:
     def _submit_locked(self, ticket: OrderTicket, daily_pnl: float | None) -> ExecutionResult:
         held = position_contracts(self.conn, mode=self.mode, ticker=ticket.ticker, side=ticket.side)
         exposure = total_exposure(self.conn, mode=self.mode)
-        event_exp = event_exposure(self.conn, mode=self.mode, event_ticker=ticket.event_ticker)
+        # Netted worst-case loss for the game, not gross spend: opposite sides of one
+        # game are the same bet and must not be counted twice (HARDENING #6).
+        event_exp = event_worst_case_exposure(
+            self.conn, mode=self.mode, event_ticker=ticket.event_ticker
+        )
         # Realized daily PnL from settled trades drives the daily-loss cap (was inert).
         if daily_pnl is None:
             daily_pnl = realized_daily_pnl(
@@ -111,6 +116,20 @@ class ExecutionEngine:
         if self.mode == "live":
             metrics = compute_metrics(build_settled_trades(self.conn, mode="paper"))
             gate_passed = evaluate_gate(metrics).passed
+        # Netting-aware per-game room: prices this order into the game's existing book
+        # so a hedge keeps its room and a same-direction add-on does not (HARDENING #6).
+        cfg = self.risk.config
+        event_room = event_room_contracts(
+            self.conn,
+            mode=self.mode,
+            event_ticker=ticket.event_ticker,
+            ticker=ticket.ticker,
+            side=ticket.side,
+            price=ticket.price,
+            cap_dollars=cfg.max_event_exposure_fraction * self.risk.bankroll,
+            fee_multiplier=cfg.fee_multiplier,
+            limit=ticket.count,
+        )
         decision = self.risk.check(
             mode=self.mode,
             ev_net=ticket.ev_net,
@@ -120,6 +139,7 @@ class ExecutionEngine:
             current_position_contracts=held,
             current_exposure=exposure,
             current_event_exposure=event_exp,
+            event_room_contracts=event_room,
             daily_pnl=daily_pnl,
             live_gate_passed=gate_passed,
         )
@@ -131,7 +151,8 @@ class ExecutionEngine:
         fee = order_fee(n, ticket.price, multiplier=self.settings.fee_multiplier)
 
         if self.mode == "paper":
-            oid = self._record(ticket, n, fee, "filled", "paper fill", None)
+            # Paper fills by construction, so requested == filled.
+            oid = self._record(ticket, n, fee, "filled", "paper fill", None, filled_count=n)
             return ExecutionResult("filled", n, "paper fill", oid)
 
         # demo + live place real orders. live only reaches here after the gate passed
@@ -154,10 +175,28 @@ class ExecutionEngine:
             price_cents=round(ticket.price * 100),
         )
         order = resp.get("order", resp) if isinstance(resp, dict) else {}
+        kalshi_id = str(order.get("order_id", ""))
+        # Acceptance is NOT execution. Record whatever filled immediately (Kalshi
+        # reports it on the create response) and leave the rest PENDING for
+        # reconcile_pending() to confirm -- the caps count pending at full size, so
+        # this is conservative in the meantime (HARDENING #1).
+        immediate, status = parse_fill(resp)
+        immediate = min(immediate, n)
+        if status == "filled" and immediate >= n:
+            oid = self._record(
+                ticket, n, fee, "filled", f"{self.mode} order filled", kalshi_id, filled_count=n
+            )
+            return ExecutionResult("filled", n, f"{self.mode} order filled", oid)
         oid = self._record(
-            ticket, n, fee, "filled", f"{self.mode} order placed", str(order.get("order_id", ""))
+            ticket,
+            n,
+            fee,
+            "pending",
+            f"{self.mode} order accepted ({immediate}/{n} filled so far)",
+            kalshi_id,
+            filled_count=immediate,
         )
-        return ExecutionResult("filled", n, f"{self.mode} order placed", oid)
+        return ExecutionResult("pending", immediate, f"{self.mode} order accepted", oid)
 
     def _record(
         self,
@@ -167,6 +206,8 @@ class ExecutionEngine:
         status: str,
         reason: str,
         kalshi_order_id: str | None,
+        *,
+        filled_count: int = 0,
     ) -> int:
         return record_order(
             self.conn,
@@ -180,6 +221,7 @@ class ExecutionEngine:
                 price=ticket.price,
                 fee=fee,
                 status=status,
+                filled_count=filled_count,
                 reason=reason,
                 p_fair=ticket.p_fair,
                 p_market=ticket.p_market,

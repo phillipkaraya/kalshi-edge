@@ -121,7 +121,7 @@ class KalshiClient:
         self,
         *,
         ticker: str,
-        action: str,  # "buy" | "sell"
+        action: str = "buy",  # "buy" | "sell"
         side: str,  # "yes" | "no"
         count: int,
         type_: str = "limit",  # "limit" | "market"
@@ -130,9 +130,78 @@ class KalshiClient:
     ) -> dict[str, Any]:
         """Place an order (authenticated).
 
-        NOTE: verify this body against Kalshi's current order schema before
-        enabling live trading; it is exercised only in demo/live modes.
+        The body shape comes from :func:`build_order_body`, which is pure so the
+        payload can be asserted in tests without touching the network. See the
+        WARNING there: neither schema has been exercised against a real account.
         """
+        body = build_order_body(
+            ticker=ticker,
+            action=action,
+            side=side,
+            count=count,
+            type_=type_,
+            price_cents=price_cents,
+            client_order_id=client_order_id,
+            schema=self.settings.kalshi_order_schema,
+            time_in_force=self.settings.kalshi_time_in_force,
+        )
+        return self._request("POST", "portfolio/orders", json=body, auth=True)
+
+    def get_order(self, order_id: str) -> dict[str, Any]:
+        """Fetch one order's current state (authenticated), for fill reconciliation."""
+        return self._request("GET", f"portfolio/orders/{order_id}", auth=True)
+
+    # --- lifecycle -----------------------------------------------------------
+    def close(self) -> None:
+        self._client.close()
+
+    def __enter__(self) -> KalshiClient:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+
+# --- order body ---------------------------------------------------------------
+# Kalshi's classic order body (action + yes/no side + integer cent prices) was slated
+# for deprecation no earlier than 2026-05-06. The current V2 shape quotes a SINGLE YES
+# book: `side` is bid/ask, prices and counts are fixed-point decimal STRINGS in dollars,
+# and time_in_force / self_trade_prevention_type are required.
+#
+# WARNING: neither shape has been sent to a real Kalshi account from this codebase.
+# HARDENING.md #7 stays open until a credentialed demo dry-run confirms one.
+_STP_DEFAULT = "taker_at_cross"
+
+
+def build_order_body(
+    *,
+    ticker: str,
+    side: str,  # "yes" | "no" -- this project's own vocabulary
+    count: int,
+    action: str = "buy",
+    type_: str = "limit",
+    price_cents: int | None = None,
+    client_order_id: str | None = None,
+    schema: str = "v2",
+    time_in_force: str = "immediate_or_cancel",
+) -> dict[str, Any]:
+    """Build the create-order payload for the requested schema.
+
+    The V2 mapping is the subtle part. There is one book, quoted in YES terms, so
+    buying NO at price ``p`` is expressed as SELLING YES at ``1 - p``:
+
+        buy YES @ 0.42  ->  {"side": "bid", "price": "0.4200"}
+        buy NO  @ 0.42  ->  {"side": "ask", "price": "0.5800"}
+
+    Getting that inversion wrong would place a real order on the opposite side of the
+    market at the wrong price, which is why it lives in a pure function with tests.
+    """
+    if side not in ("yes", "no"):
+        raise ValueError(f"side must be 'yes' or 'no', got {side!r}")
+    if count <= 0:
+        raise ValueError(f"count must be positive, got {count}")
+
+    if schema == "legacy":
         body: dict[str, Any] = {
             "ticker": ticker,
             "action": action,
@@ -144,14 +213,64 @@ class KalshiClient:
             body["yes_price" if side == "yes" else "no_price"] = price_cents
         if client_order_id:
             body["client_order_id"] = client_order_id
-        return self._request("POST", "portfolio/orders", json=body, auth=True)
+        return body
 
-    # --- lifecycle -----------------------------------------------------------
-    def close(self) -> None:
-        self._client.close()
+    if schema != "v2":
+        raise ValueError(f"unknown order schema {schema!r}")
+    if type_ == "limit" and price_cents is None:
+        raise ValueError("limit orders need a price")
 
-    def __enter__(self) -> KalshiClient:
-        return self
+    body = {
+        "ticker": ticker,
+        # buy YES = bid on the YES book; buy NO = ask (sell YES) on the same book.
+        "side": "bid" if side == "yes" else "ask",
+        "count": f"{count}.00",
+        "time_in_force": time_in_force,
+        "self_trade_prevention_type": _STP_DEFAULT,
+    }
+    if price_cents is not None:
+        yes_cents = price_cents if side == "yes" else 100 - price_cents
+        body["price"] = f"{yes_cents / 100:.4f}"
+    if client_order_id:
+        body["client_order_id"] = client_order_id
+    return body
 
-    def __exit__(self, *exc: object) -> None:
-        self.close()
+
+def parse_fill(payload: dict[str, Any]) -> tuple[int, str]:
+    """Read (filled_contracts, normalized_status) out of an order/create response.
+
+    Kalshi reports counts as fixed-point strings and uses several names across
+    endpoints (``fill_count`` on create, ``taker_fill_count``/``remaining_count`` on
+    fetch), with status one of resting/pending/executed/canceled. Anything we cannot
+    read is reported as zero filled and still-pending, so an unparsed response can
+    never be mistaken for a confirmed fill.
+    """
+    order = payload.get("order", payload) if isinstance(payload, dict) else {}
+    if not isinstance(order, dict):
+        return 0, "pending"
+
+    def _int(*names: str) -> int | None:
+        for n in names:
+            v = order.get(n)
+            if v is None:
+                continue
+            try:
+                return int(float(v))
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    filled = _int("fill_count", "taker_fill_count", "filled_count") or 0
+    remaining = _int("remaining_count")
+    raw = str(order.get("status", "")).lower()
+    if raw in ("executed", "filled"):
+        status = "filled"
+    elif raw == "canceled":
+        status = "canceled"
+    elif raw in ("resting", "pending", ""):
+        # No status we recognise: fall back to the counts. Only a zero remainder with
+        # something actually filled counts as complete.
+        status = "filled" if (remaining == 0 and filled > 0) else "pending"
+    else:
+        status = "pending"
+    return max(0, filled), status

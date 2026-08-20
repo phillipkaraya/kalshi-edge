@@ -23,27 +23,77 @@ none affect paper-mode correctness, but each must be addressed before live capit
 - **WAL + busy timeout** on the SQLite connection (partial mitigation of the write race).
 
 ## Remaining before live (deferred)
-1. **Order/fill reconciliation (was: records "filled" on acceptance).** demo/live
-   currently mark an accepted order "filled" with the *requested* count. Poll
-   Kalshi's order/fills endpoint, record `pending` until confirmed, and store the
-   *actual* filled count. Until then, live exposure caps see optimistic state.
-2. **Count resting/pending orders toward exposure.** Exposure aggregates filter
-   `status='filled'`; a resting limit order won't count, so caps could oversize.
-3. ~~Full transaction around read→check→insert~~ — **DONE.** `engine.submit` wraps
-   read+gate+record in `BEGIN IMMEDIATE` on an autocommit connection (`record_order`
-   defers its commit); the wrapper commits once / rolls back on error, so two concurrent
-   passes serialize on the write lock. Test: `test_submit_commit_persists_across_connections`.
-   (Note: demo/live hold the lock across the order network call — fine for a single-user
-   tool; the reserve-pending pattern in #1 supersedes this when live trading is built.)
-4. ~~Wire `daily_pnl` from the ledger~~ — **DONE** (realized daily PnL computed in `submit`).
-5. **Reserve the order's own fee in cap math.** `room_*` divides by price without
-   reserving the new fee, and the `+1e-9` floor can oversize by ~1 contract. Size
-   so `n*price + order_fee(n) + committed <= cap`.
-6. **Correlation-aware event netting.** The per-event cap is a gross dollar-spend
-   ceiling; it does not recognize that NYK-yes and SAS-no are the same directional
-   bet, nor credit hedges. Map opposite sides to a common per-outcome notional.
-7. **Verify Kalshi's order-body schema** (`client.create_order`) against the live
-   API before the first real order; do a credentialed dry-run on the demo sandbox.
-8. ~~Input validation in devig~~ — **DONE** (`american_to_prob(0)` and non-positive raw probs raise).
-9. **Live kill switch as a real-time abort** — currently read from `Settings` at
-   construction; back it with a polled file/row so it halts a running loop instantly.
+
+**Hardening pass 3 (2026-08-19)** closed items 1, 2, 5, 6 and 9 in code + tests, and
+took 7 as far as it can go without touching a real account. 148 tests pass; ruff + ty
+clean. What each one actually changed:
+
+1. ~~Order/fill reconciliation~~ — **DONE.** `count` (requested) and `filled_count`
+   (confirmed) are now separate columns. demo/live record **`pending` with a zero
+   fill** on acceptance; only `execution/reconcile.py` promotes a row to `filled`, with
+   the count Kalshi reports. A lookup failure leaves the row pending rather than
+   guessing, a fill is never recorded above the requested size, and a cancel keeps only
+   the contracts that actually traded. Wired into the scheduled pass, which reconciles
+   *before* sizing anything new. Paper is unaffected (it fills by construction).
+   Tests: `test_reconcile_records_the_real_partial_fill`,
+   `test_reconcile_leaves_the_row_pending_when_kalshi_cannot_be_reached`.
+2. ~~Count resting/pending orders toward exposure~~ — **DONE.** The cap aggregates
+   count `filled` **and** `pending` (a resting order commits capital and can fill at
+   any moment); displayed positions and trade grading still count confirmed fills only.
+   Test: `test_resting_order_consumes_cap_room`, `test_pending_order_still_consumes_cap_room`.
+3. ~~Full transaction around read→check→insert~~ — **DONE** (pass 2).
+4. ~~Wire `daily_pnl` from the ledger~~ — **DONE** (pass 2).
+5. ~~Reserve the order's own fee in cap math~~ — **DONE.** Sizing solves for the
+   largest `n` with `n*price + order_fee(n) + committed <= cap`
+   (`fees.max_contracts_within_budget`), and the `+1e-9` slack is gone. This was not
+   theoretical: on the default $50 market cap the old code allowed 100 contracts at
+   $0.50 that cost **$51.75** all-in — a $1.75 breach of the cap being enforced.
+   Tests: `test_sizing_never_exceeds_its_budget_once_the_fee_is_paid` (parametrised
+   across prices and budgets), `test_no_cap_is_ever_breached_once_fees_are_paid`.
+6. ~~Correlation-aware event netting~~ — **DONE.** The per-game cap is now a
+   **worst-case loss** across every way the game can resolve, not gross spend. A YES
+   leg pays iff its subject wins, a NO leg iff it does not, and the subject is read off
+   the ticker suffix (`…-SAS`), verified against real settled data. Sizing prices the
+   candidate order *into* the book rather than subtracting a scalar — that distinction
+   is the whole feature, since a scalar gives a hedge and a doubling-down bet identical
+   room. Measured on the $60 default cap: same-direction second leg squeezed 96 → 19
+   contracts, while a true hedge clears its full 96 and drops worst-case exposure from
+   $49.68 to $3.36. Never more permissive than gross spend for a one-sided book.
+   **Safety note:** the "some other outcome wins" scenario is only dropped when
+   `market_snapshots` proves the game's outcomes are fully covered; with no market data
+   the conservative scenario stays in and no hedge credit is given.
+   Tests: `test_opposite_sides_of_one_game_are_one_bet`, `test_a_real_hedge_is_credited`,
+   `test_one_sided_book_is_never_cheaper_than_gross_spend`,
+   `test_unknown_outcome_universe_stays_conservative`.
+7. **Verify Kalshi's order-body schema — PARTIALLY DONE, still blocks live.**
+   The body was checked against Kalshi's published docs and **was wrong**: it used the
+   classic `/portfolio/orders` shape (`action`, `side: yes/no`, `type`, integer-cent
+   `yes_price`/`no_price`), and that endpoint was slated for deprecation **no earlier
+   than 2026-05-06** — already past. The current V2 schema quotes a single YES book:
+   `side` is `bid`/`ask`, `count` and `price` are fixed-point decimal *strings* in
+   dollars, and `time_in_force` + `self_trade_prevention_type` are required.
+   The payload now comes from a pure, unit-tested `build_order_body()` defaulting to
+   V2, with `legacy` available via `KALSHI_ORDER_SCHEMA`. Note the subtle mapping:
+   buying NO at $0.42 is expressed as **selling YES at $0.58** (`side: ask`), so an
+   error here would place a real order on the wrong side at the wrong price — hence the
+   dedicated test.
+   **STILL REQUIRED, and this is Phil's step:** a credentialed dry-run on the demo
+   sandbox to confirm which schema the account actually accepts. Nothing in this
+   codebase has ever sent an order to a real Kalshi account, and that cannot be
+   verified without placing one.
+8. ~~Input validation in devig~~ — **DONE** (pass 1).
+9. ~~Live kill switch as a real-time abort~~ — **DONE.** `RiskManager.kill_engaged()`
+   polls `KALSHI_KILL_SWITCH_FILE` (default `data/KILL`) before **every** order, so a
+   running loop halts the moment the file appears rather than at the next restart. The
+   env flag remains as a start-up setting. A filesystem error counts as engaged: if we
+   cannot tell whether we were told to stop, we stop.
+   Halt a live session with: `touch data/KILL`
+   Test: `test_kill_switch_file_halts_a_running_session`.
+
+## Still open before real capital
+- **#7's credentialed demo dry-run** (above) — the one item code cannot close.
+- Rotate the Kalshi private key: it transited a chat transcript on 2026-06-01 and
+  `~/.kalshi/kalshi_key.pem` is unchanged since, so the exposure stands.
+- Confirm NBA contracts are tradable in **GA** before any live order.
+- The consistency gate still needs ≥100 settled paper trades; it sits at 0 until the
+  season resumes (the hourly paper pass accumulates them automatically).

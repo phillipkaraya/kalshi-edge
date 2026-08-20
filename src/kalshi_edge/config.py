@@ -26,6 +26,16 @@ class Settings(BaseSettings):
     kalshi_private_key_path: Path | None = None
     # NBA series: KXNBAGAME = per-game winners (core unit); KXNBA = Finals futures.
     kalshi_series: list[str] = Field(default_factory=lambda: ["KXNBAGAME"])
+    # Order-body schema. Kalshi's classic /portfolio/orders shape (action + yes/no side
+    # + cent prices) was slated for deprecation no earlier than 2026-05-06, and the
+    # current V2 shape is different enough that the two are not interchangeable: single
+    # YES book (bid/ask), fixed-point dollar strings, mandatory time_in_force. Default
+    # to the documented current schema; "legacy" stays available as an escape hatch.
+    # NEITHER has been exercised against a real account -- see HARDENING.md #7.
+    kalshi_order_schema: Literal["v2", "legacy"] = "v2"
+    kalshi_time_in_force: Literal["fill_or_kill", "good_till_canceled", "immediate_or_cancel"] = (
+        "immediate_or_cancel"
+    )
 
     # --- Sports data (Slice 1+) ---------------------------------------------
     odds_api_key: str | None = None
@@ -51,6 +61,10 @@ class Settings(BaseSettings):
     max_daily_loss: float = 100.0  # stop trading once realized daily loss hits this ($)
     min_liquidity_spread: float = 0.05  # skip markets whose YES spread is wider than this
     kill_switch: bool = False  # hard stop: blocks all order placement when True
+    # Real-time abort. The bool above is read once from the environment, so a running
+    # loop can never see it change; this path is polled before EVERY order, so creating
+    # the file halts an in-flight session immediately (`touch data/KILL`).
+    kill_switch_file: Path = Path("data/KILL")
     live_enabled: bool = False  # live stays OFF until the Slice 3 consistency gate flips it
 
     @property

@@ -19,6 +19,16 @@ TICKET = OrderTicket(
 )
 
 
+def _snapshot_game(conn) -> None:
+    """Record that this game has exactly two markets, as a live pass would."""
+    for team in ("SAS", "NYK"):
+        conn.execute(
+            "INSERT INTO market_snapshots (ts, ticker, event_ticker) VALUES (?, ?, ?)",
+            ("2026-06-10T00:00:00Z", f"KXNBAGAME-26JUN10SASNYK-{team}", "KXNBAGAME-26JUN10SASNYK"),
+        )
+    conn.commit()
+
+
 def _engine(tmp_path, mode: str) -> ExecutionEngine:
     settings = Settings(execution_mode=mode)  # type: ignore[arg-type]
     conn = connect(tmp_path / "t.db")
@@ -30,8 +40,10 @@ def test_paper_fill_then_cap(tmp_path) -> None:
     engine = _engine(tmp_path, "paper")
     first = engine.submit(TICKET)
     assert first.status == "filled"
-    assert first.contracts == 100
-    # Second submit: already at the 100-contract market cap -> rejected.
+    # 96, not the requested 100: the market cap is $50 and 100 contracts would cost
+    # $51.75 once the fee is paid, so the gate reserves the fee (HARDENING #5).
+    assert first.contracts == 96
+    # Second submit: already at the market cap -> rejected.
     second = engine.submit(TICKET)
     assert second.status == "rejected"
     assert "cap" in second.reason
@@ -61,6 +73,7 @@ def test_thin_spread_blocks_fill(tmp_path) -> None:
 
 def test_event_cap_limits_second_correlated_bet(tmp_path) -> None:
     engine = _engine(tmp_path, "paper")
+    _snapshot_game(engine.conn)
     first = engine.submit(TICKET)
     assert first.status == "filled"
     # A different market on the SAME game -> capped by the per-event budget, not full size.
@@ -103,11 +116,71 @@ def test_demo_requires_demo_env(tmp_path) -> None:
     assert "KALSHI_ENV=demo" in res.reason
 
 
-def test_demo_places_on_demo_env(tmp_path) -> None:
+def test_demo_records_pending_not_filled(tmp_path) -> None:
+    """Acceptance is not execution (HARDENING #1).
+
+    Kalshi returning an order_id means the order was accepted, not that anyone traded
+    with it. The row must land as `pending` with a zero fill so the consistency gate
+    never grades a trade that did not happen.
+    """
     engine = _engine_with(tmp_path, "demo", kalshi_env="demo", client=_FakeClient())
     res = engine.submit(TICKET)
+    assert res.status == "pending"
+    assert "accepted" in res.reason
+    row = engine.conn.execute("SELECT status, count, filled_count FROM orders").fetchone()
+    assert row["status"] == "pending"
+    assert row["filled_count"] == 0
+    assert row["count"] > 0  # the requested size is still recorded
+
+
+def test_pending_order_still_consumes_cap_room(tmp_path) -> None:
+    """A resting order can fill at any moment, so it must not be invisible to sizing."""
+    engine = _engine_with(tmp_path, "demo", kalshi_env="demo", client=_FakeClient())
+    first = engine.submit(TICKET)
+    assert first.status == "pending"
+    second = engine.submit(TICKET)  # same market, nothing has actually filled yet
+    assert second.status == "rejected"
+    assert "cap" in second.reason
+
+
+def test_immediate_full_fill_is_recorded_as_filled(tmp_path) -> None:
+    """When Kalshi reports the whole order filled on acceptance, trust it."""
+
+    class _FillingClient:
+        authenticated = True
+
+        def create_order(self, **kwargs):
+            return {"order": {"order_id": "x1", "status": "executed", "fill_count": "96.00"}}
+
+    engine = _engine_with(tmp_path, "demo", kalshi_env="demo", client=_FillingClient())
+    res = engine.submit(TICKET)
     assert res.status == "filled"
-    assert "demo order placed" in res.reason
+    row = engine.conn.execute("SELECT status, filled_count FROM orders").fetchone()
+    assert (row["status"], row["filled_count"]) == ("filled", 96)
+
+
+def test_hedge_earns_back_event_room(tmp_path) -> None:
+    """Opposite sides of one game cannot both lose, so the cap must credit the hedge.
+
+    Buying SAS-yes then NYK-yes in the same game is a hedge: exactly one pays out.
+    Gross-spend accounting charged both against the per-game cap; worst-case netting
+    recognises that the second leg adds little real risk (HARDENING #6).
+    """
+    engine = _engine(tmp_path, "paper")
+    # The real pass snapshots every market in the game before trading it, and that is
+    # what establishes the outcome universe (exactly one of SAS/NYK wins). Without it
+    # the gate cannot prove the hedge is a hedge and stays conservative.
+    _snapshot_game(engine.conn)
+    first = engine.submit(TICKET)
+    assert first.status == "filled"
+    hedge = OrderTicket(
+        **{**TICKET.__dict__, "ticker": "KXNBAGAME-26JUN10SASNYK-NYK", "side": "yes"}
+    )
+    second = engine.submit(hedge)
+    assert second.status == "filled"
+    # The hedge is not squeezed the way a correlated same-direction bet is: it clears
+    # materially more than the handful of contracts the gross-spend cap would allow.
+    assert second.contracts > first.contracts // 2
 
 
 def test_daily_loss_cap_blocks_after_settled_loss(tmp_path) -> None:

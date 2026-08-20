@@ -18,6 +18,7 @@ from kalshi_edge.data.fixtures import fixture_game_odds
 from kalshi_edge.data.matcher import fair_value_for_market
 from kalshi_edge.data.odds import get_game_odds_cached
 from kalshi_edge.execution.engine import ExecutionEngine, ticket_from_edge
+from kalshi_edge.execution.reconcile import reconcile_pending
 from kalshi_edge.execution.risk import RiskConfig, RiskManager
 from kalshi_edge.kalshi.client import KalshiClient
 from kalshi_edge.kalshi.markets import fetch_markets, tradeable_markets
@@ -29,9 +30,21 @@ def run_once(settings: Settings | None = None) -> dict[str, int]:
     conn = storage.connect(s.db_path)
     client = KalshiClient(s)
     engine = ExecutionEngine(s, conn, RiskManager(RiskConfig.from_settings(s), s.bankroll), client)
-    counts = {"markets": 0, "signals": 0, "filled": 0, "rejected": 0, "settled": 0}
+    counts = {
+        "markets": 0,
+        "signals": 0,
+        "filled": 0,
+        "pending": 0,
+        "rejected": 0,
+        "settled": 0,
+        "reconciled": 0,
+    }
     try:
         counts["settled"] = ingest_settlements(conn, client, s.kalshi_series)
+        # Confirm what actually filled BEFORE sizing anything new, so this pass
+        # sees true exposure rather than last pass's optimistic guess. No-op in
+        # paper mode, which fills by construction.
+        counts["reconciled"] = reconcile_pending(conn, client, mode=s.execution_mode).changed
         games = get_game_odds_cached(s)[0] if s.has_odds_source else fixture_game_odds()
         now = datetime.now(UTC)
         for m in tradeable_markets(fetch_markets(client, s.kalshi_series)):
@@ -56,6 +69,7 @@ def run_once(settings: Settings | None = None) -> dict[str, int]:
             if ticket is not None:
                 result = engine.submit(ticket)
                 counts["filled"] += result.status == "filled"
+                counts["pending"] += result.status == "pending"
                 counts["rejected"] += result.status == "rejected"
     finally:
         client.close()
