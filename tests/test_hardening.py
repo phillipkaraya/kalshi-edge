@@ -608,3 +608,21 @@ def test_yes_team_selects_that_team_s_probabilities(tmp_path):
         )
         fv = fair_value_for_market(m, [game])
         assert fv is not None and fv.p_fair == pytest.approx(expected, abs=0.02)
+
+
+def test_markets_without_signals_is_reported_as_a_failure_not_a_quiet_pass():
+    """The matcher outage looked identical to an efficient market: exit 0, no signals.
+    That shape must produce a visible warning."""
+    from kalshi_edge.paper_pass import health_warnings
+
+    assert health_warnings({"markets": 6, "signals": 0}) != []
+    assert "0 signals" in health_warnings({"markets": 6, "signals": 0})[0]
+    assert health_warnings({"markets": 6, "signals": 6}) == []
+    assert health_warnings({"markets": 0, "signals": 0}) == []  # genuine offseason
+
+
+def test_stale_orders_are_surfaced_in_the_pass_output():
+    from kalshi_edge.paper_pass import health_warnings
+
+    out = health_warnings({"markets": 1, "signals": 1, "stale": 2})
+    assert out and "resting far longer" in out[0]

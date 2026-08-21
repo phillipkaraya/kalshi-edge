@@ -38,15 +38,18 @@ def run_once(settings: Settings | None = None) -> dict[str, int]:
         "rejected": 0,
         "settled": 0,
         "reconciled": 0,
+        "stale": 0,
     }
     try:
         counts["settled"] = ingest_settlements(conn, client, s.kalshi_series)
         # Confirm what actually filled BEFORE sizing anything new, so this pass
         # sees true exposure rather than last pass's optimistic guess. No-op in
         # paper mode, which fills by construction.
-        counts["reconciled"] = reconcile_pending(
+        report = reconcile_pending(
             conn, client, mode=s.execution_mode, fee_multiplier=s.fee_multiplier
-        ).changed
+        )
+        counts["reconciled"] = report.changed
+        counts["stale"] = report.stale
         games = get_game_odds_cached(s)[0] if s.has_odds_source else fixture_game_odds()
         now = datetime.now(UTC)
         for m in tradeable_markets(fetch_markets(client, s.kalshi_series)):
@@ -79,9 +82,35 @@ def run_once(settings: Settings | None = None) -> dict[str, int]:
     return counts
 
 
+def health_warnings(counts: dict[str, int]) -> list[str]:
+    """Silent-failure signatures worth shouting about.
+
+    The pass exits 0 whether it evaluated every market or none of them, so a break in
+    the middle of the pipeline looks exactly like a quiet offseason. That is not
+    hypothetical: a Kalshi title restyle made the matcher return None for every market
+    on 2026-08-21, and the run kept reporting success with zero signals. These checks
+    turn that shape into a line a human (or the registry sweeper) can actually see.
+    """
+    warnings = []
+    if counts["markets"] > 0 and counts["signals"] == 0:
+        warnings.append(
+            f"WARNING: {counts['markets']} tradeable markets but 0 signals -- every market "
+            "failed to match odds. Check ticker/title parsing (data/teams.py) and odds "
+            "coverage before assuming the market is simply efficient."
+        )
+    if counts.get("stale"):
+        warnings.append(
+            f"WARNING: {counts['stale']} order(s) resting far longer than expected -- "
+            "they still hold cap room and need a human decision."
+        )
+    return warnings
+
+
 def main() -> None:
     counts = run_once()
     print(datetime.now(UTC).isoformat(), "paper_pass", counts)
+    for w in health_warnings(counts):
+        print(w)
 
 
 if __name__ == "__main__":
