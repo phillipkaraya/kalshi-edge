@@ -115,7 +115,11 @@ _HELD_COST = (
     "ELSE -((CASE WHEN status='pending' THEN count ELSE filled_count END)*price) END)"
 )
 # Statuses that tie up capital. 'rejected' and 'canceled' never do.
+# Rendered to a SQL list once rather than interpolating the tuple directly: a
+# one-element tuple would format as ('filled',) and the trailing comma is a syntax
+# error, so the obvious shortcut breaks the day someone shortens this list.
 _OPEN_STATUSES = ("filled", "pending")
+_OPEN_SQL = "(" + ", ".join(f"'{s}'" for s in _OPEN_STATUSES) + ")"
 
 
 def get_positions(conn: sqlite3.Connection, *, mode: str) -> list[Position]:
@@ -146,7 +150,7 @@ def position_contracts(conn: sqlite3.Connection, *, mode: str, ticker: str, side
     """Committed contracts on one market side -- fills plus resting orders."""
     row = conn.execute(
         f"SELECT COALESCE({_HELD}, 0) AS c FROM orders "
-        f"WHERE mode = ? AND status IN {_OPEN_STATUSES} AND ticker = ? AND side = ?",
+        f"WHERE mode = ? AND status IN {_OPEN_SQL} AND ticker = ? AND side = ?",
         (mode, ticker, side),
     ).fetchone()
     return int(row["c"])
@@ -156,7 +160,7 @@ def total_exposure(conn: sqlite3.Connection, *, mode: str) -> float:
     """Total $ committed across every market -- fills plus resting orders."""
     row = conn.execute(
         f"SELECT COALESCE({_HELD_COST}, 0.0) AS c FROM orders "
-        f"WHERE mode = ? AND status IN {_OPEN_STATUSES}",
+        f"WHERE mode = ? AND status IN {_OPEN_SQL}",
         (mode,),
     ).fetchone()
     return round(float(row["c"]), 4)
@@ -174,7 +178,7 @@ def event_exposure(conn: sqlite3.Connection, *, mode: str, event_ticker: str | N
     row = conn.execute(
         f"SELECT COALESCE(SUM((CASE WHEN status='pending' THEN count ELSE filled_count END)"
         f"*price + fee), 0.0) AS c FROM orders "
-        f"WHERE mode = ? AND status IN {_OPEN_STATUSES} AND action = 'buy' AND event_ticker = ?",
+        f"WHERE mode = ? AND status IN {_OPEN_SQL} AND action = 'buy' AND event_ticker = ?",
         (mode, event_ticker),
     ).fetchone()
     return round(float(row["c"]), 4)
@@ -202,7 +206,7 @@ def _event_legs(
                    SUM((CASE WHEN status='pending' THEN count ELSE filled_count END)*price + fee)
                        AS cost
             FROM orders
-            WHERE mode = ? AND status IN {_OPEN_STATUSES} AND action = 'buy'
+            WHERE mode = ? AND status IN {_OPEN_SQL} AND action = 'buy'
                   AND event_ticker = ?
             GROUP BY ticker, side""",
         (mode, event_ticker),
@@ -347,18 +351,24 @@ def update_order_fill(
     filled_count: int,
     status: str,
     reason: str | None = None,
+    fee: float | None = None,
     commit: bool = True,
 ) -> None:
-    """Record the confirmed fill for one order."""
-    if reason is None:
-        conn.execute(
-            "UPDATE orders SET filled_count = ?, status = ? WHERE id = ?",
-            (filled_count, status, order_id),
-        )
-    else:
-        conn.execute(
-            "UPDATE orders SET filled_count = ?, status = ?, reason = ? WHERE id = ?",
-            (filled_count, status, reason, order_id),
-        )
+    """Record the confirmed fill for one order, and optionally restate its fee.
+
+    The fee is charged on contracts that trade, so an order booked for 100 and filled
+    for 10 must not keep the 100-contract fee: that inflates cost everywhere it is
+    read -- overstating losses in grading and in the daily-loss cap.
+    """
+    sets = ["filled_count = ?", "status = ?"]
+    params: list[object] = [filled_count, status]
+    if reason is not None:
+        sets.append("reason = ?")
+        params.append(reason)
+    if fee is not None:
+        sets.append("fee = ?")
+        params.append(fee)
+    params.append(order_id)
+    conn.execute(f"UPDATE orders SET {', '.join(sets)} WHERE id = ?", params)
     if commit:
         conn.commit()

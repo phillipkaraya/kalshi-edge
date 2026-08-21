@@ -40,14 +40,14 @@ st.caption(
 )
 
 
-def _run_paper_pass(mode: str) -> tuple[int, int]:
+def _run_paper_pass(mode: str) -> tuple[int, int, int]:
     settings = Settings(execution_mode=cast(Literal["paper", "demo", "live"], mode))
     conn = storage.connect(settings.db_path)
     client = KalshiClient(settings)
     engine = ExecutionEngine(
         settings, conn, RiskManager(RiskConfig.from_settings(settings), settings.bankroll), client
     )
-    filled = rejected = 0
+    filled = pending = rejected = 0
     try:
         markets = tradeable_markets(fetch_markets(client, settings.kalshi_series))
         games = (
@@ -74,19 +74,27 @@ def _run_paper_pass(mode: str) -> tuple[int, int]:
             if ticket is None:
                 continue
             result = engine.submit(ticket)
+            # demo/live orders come back "pending" -- accepted by Kalshi but not yet
+            # confirmed filled. Counting those as rejections would tell the user their
+            # orders failed when they are actually resting on the book.
             if result.status == "filled":
                 filled += 1
+            elif result.status == "pending":
+                pending += 1
             else:
                 rejected += 1
     finally:
         client.close()
         conn.close()
-    return filled, rejected
+    return filled, pending, rejected
 
 
 if st.button(f"▶️ Run a {mode} pass over current edges"):
-    filled, rejected = _run_paper_pass(mode)
-    st.success(f"{mode} pass complete — {filled} filled, {rejected} rejected.")
+    filled, pending, rejected = _run_paper_pass(mode)
+    summary = f"{filled} filled, {rejected} rejected"
+    if pending:
+        summary += f", {pending} resting (awaiting fill confirmation)"
+    st.success(f"{mode} pass complete — {summary}.")
 
 conn = storage.connect(base.db_path)
 try:

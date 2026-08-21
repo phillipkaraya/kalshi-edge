@@ -344,3 +344,267 @@ def test_update_order_fill_sets_count_and_status(tmp_path):
     update_order_fill(conn, oid, filled_count=6, status="filled", reason="partial")
     row = conn.execute("SELECT status, filled_count, reason FROM orders").fetchone()
     assert (row["status"], row["filled_count"], row["reason"]) == ("filled", 6, "partial")
+
+
+# --- partial fills must never be graded at the requested size -----------------
+
+
+def _settled(conn, ticker, result):
+    from kalshi_edge.backtest.settlement import record_settlement
+
+    record_settlement(conn, ticker=ticker, event_ticker=EVENT, result=result, last_price=0.0)
+
+
+def test_partial_fill_is_graded_at_the_contracts_that_actually_traded(tmp_path):
+    """Regression: grading read `count` (requested) instead of `filled_count`.
+
+    A 100-contract order that filled 10 would have been graded as a 100-contract
+    trade -- inflating both the size and the PnL feeding the consistency gate, which
+    is the exact check standing between paper and real money.
+    """
+    from kalshi_edge.backtest.settlement import build_settled_trades
+
+    conn = connect(tmp_path / "t.db")
+    record_order(
+        conn,
+        OrderRecord(
+            mode="demo",
+            ticker=SAS,
+            event_ticker=EVENT,
+            side="yes",
+            action="buy",
+            count=100,
+            price=0.50,
+            fee=0.10,
+            status="filled",
+            filled_count=10,
+            p_fair=0.60,
+            p_market=0.50,
+        ),
+    )
+    _settled(conn, SAS, "yes")
+    trades = build_settled_trades(conn, mode="demo")
+    assert len(trades) == 1
+    assert trades[0].count == 10  # not 100
+
+
+def test_filled_record_without_a_count_means_fully_filled(tmp_path):
+    """The invariant that makes a zero-fill inexpressible as 'filled'.
+
+    Omitting filled_count on a filled order must mean "all of it", not "none of it" --
+    otherwise a forgotten keyword silently erases a real trade from grading and caps.
+    A genuine zero-fill is recorded as canceled by reconciliation, never as filled.
+    """
+    conn = connect(tmp_path / "t.db")
+    record_order(
+        conn,
+        OrderRecord(
+            mode="demo",
+            ticker=SAS,
+            event_ticker=EVENT,
+            side="yes",
+            action="buy",
+            count=100,
+            price=0.50,
+            fee=0.0,
+            status="filled",
+        ),
+    )
+    assert conn.execute("SELECT filled_count FROM orders").fetchone()["filled_count"] == 100
+
+
+def test_grading_skips_a_row_that_somehow_reached_filled_with_no_fill(tmp_path):
+    """Belt and braces: update_order_fill writes SQL directly, bypassing the record
+    invariant, so grading also guards on filled_count > 0."""
+    from kalshi_edge.backtest.settlement import build_settled_trades
+
+    conn = connect(tmp_path / "t.db")
+    oid = record_order(
+        conn,
+        OrderRecord(
+            mode="demo",
+            ticker=SAS,
+            event_ticker=EVENT,
+            side="yes",
+            action="buy",
+            count=100,
+            price=0.50,
+            fee=0.0,
+            status="pending",
+            p_fair=0.60,
+            p_market=0.50,
+        ),
+    )
+    _settled(conn, SAS, "yes")
+    update_order_fill(conn, oid, filled_count=0, status="filled")  # contradictory state
+    assert build_settled_trades(conn, mode="demo") == []
+
+
+def test_daily_loss_cap_only_counts_contracts_that_filled(tmp_path):
+    """Regression: the stop was charged for contracts that never traded, which would
+    halt trading over losses that were never taken."""
+    from kalshi_edge.backtest.settlement import realized_daily_pnl
+
+    conn = connect(tmp_path / "t.db")
+    record_order(
+        conn,
+        OrderRecord(
+            mode="demo",
+            ticker=SAS,
+            event_ticker=EVENT,
+            side="yes",
+            action="buy",
+            count=300,
+            price=0.50,
+            fee=0.0,
+            status="filled",
+            filled_count=10,
+        ),
+    )
+    _settled(conn, SAS, "no")  # the bet lost
+    row = conn.execute("SELECT substr(settled_ts,1,10) d FROM settlements").fetchone()
+    pnl = realized_daily_pnl(conn, mode="demo", on_date=row["d"])
+    assert pnl == pytest.approx(-5.0)  # 10 x $0.50 lost, NOT the requested 300 x $0.50
+
+
+def test_reconcile_restates_the_fee_for_the_contracts_that_actually_traded(tmp_path):
+    """A row booked for 100 keeps a 100-contract fee unless reconciliation corrects it,
+    which would overstate cost in grading and in the daily-loss cap."""
+    conn = connect(tmp_path / "t.db")
+    booked_fee = order_fee(100, 0.50)
+    record_order(
+        conn,
+        OrderRecord(
+            mode="demo",
+            ticker=SAS,
+            event_ticker=EVENT,
+            side="yes",
+            action="buy",
+            count=100,
+            price=0.50,
+            fee=booked_fee,
+            status="pending",
+            kalshi_order_id="A",
+        ),
+    )
+    reconcile_pending(
+        conn, _Client({"A": {"order": {"status": "executed", "fill_count": "10"}}}), mode="demo"
+    )
+    row = conn.execute("SELECT filled_count, fee FROM orders").fetchone()
+    assert row["filled_count"] == 10
+    assert row["fee"] == pytest.approx(order_fee(10, 0.50))
+    assert row["fee"] < booked_fee
+
+
+def test_stale_pending_orders_are_flagged_but_never_silently_expired(tmp_path):
+    """A long-resting order is still live on Kalshi's book. Dropping it locally would
+    free cap room that is genuinely committed, so it must stay pending and be counted."""
+    conn = connect(tmp_path / "t.db")
+    _order(conn, SAS, "yes", 10, 0.50, "pending", oid="A")
+    conn.execute("UPDATE orders SET ts = '2020-01-01T00:00:00+00:00'")
+    conn.commit()
+    report = reconcile_pending(
+        conn,
+        _Client({"A": {"order": {"status": "resting", "fill_count": "0"}}}),
+        mode="demo",
+        stale_after_hours=24.0,
+    )
+    assert report.stale == 1
+    assert report.still_pending == 1
+    row = conn.execute("SELECT status FROM orders").fetchone()
+    assert row["status"] == "pending"  # NOT expired away
+    assert position_contracts(conn, mode="demo", ticker=SAS, side="yes") == 10  # still committed
+
+
+def test_a_fresh_pending_order_is_not_stale(tmp_path):
+    conn = connect(tmp_path / "t.db")
+    _order(conn, SAS, "yes", 10, 0.50, "pending", oid="A")
+    report = reconcile_pending(conn, _Client({"A": {"order": {"status": "resting"}}}), mode="demo")
+    assert (report.stale, report.still_pending) == (0, 1)
+
+
+def test_unreadable_timestamp_is_not_treated_as_stale(tmp_path):
+    conn = connect(tmp_path / "t.db")
+    _order(conn, SAS, "yes", 10, 0.50, "pending", oid="A")
+    conn.execute("UPDATE orders SET ts = 'not-a-timestamp'")
+    conn.commit()
+    report = reconcile_pending(conn, _Client({"A": {"order": {"status": "resting"}}}), mode="demo")
+    assert report.stale == 0
+
+
+# --- ticker parsing: the engine must not go blind when Kalshi restyles a title ----
+
+
+def test_regular_season_title_style_still_parses():
+    """Regression, found live 2026-08-21: regular-season markets are titled
+    "San Antonio wins", which the "X at Y" title grammar cannot parse. Every market
+    fell through to fair_value=None, so the scheduled pass produced ZERO signals and
+    the consistency gate could never have accumulated a single trade."""
+    from kalshi_edge.data.teams import parse_kalshi_game
+
+    p = parse_kalshi_game("San Antonio wins", "San Antonio", "KXNBAGAME-26OCT20OKCSAS-SAS")
+    assert p is not None
+    assert (p.away, p.home, p.yes_tricode) == ("OKC", "SAS", "SAS")
+    assert p.game_date.isoformat() == "2026-10-20"
+
+
+def test_ticker_parse_needs_no_title_at_all():
+    from kalshi_edge.data.teams import parse_kalshi_game
+
+    p = parse_kalshi_game(None, None, "KXNBAGAME-26OCT20BOSDET-DET")
+    assert (p.away, p.home, p.yes_tricode) == ("BOS", "DET", "DET")
+
+
+def test_playoff_title_grammar_still_wins_when_present():
+    """The title route must keep working -- it carries home/away for series games."""
+    from kalshi_edge.data.teams import parse_kalshi_game
+
+    p = parse_kalshi_game(
+        "Game 4: San Antonio at New York Winner?", "New York", "KXNBAGAME-26JUN10SASNYK-NYK"
+    )
+    assert (p.away, p.home, p.yes_tricode) == ("SAS", "NYK", "NYK")
+
+
+@pytest.mark.parametrize(
+    "ticker",
+    [
+        "KXNBAGAME-26OCT20OKCSAS",  # no YES suffix
+        "KXNBAGAME-26OCT20ZZZQQQ-ZZZ",  # unknown teams
+        "KXNBAGAME-26OCT20OKCOKC-OKC",  # a team cannot play itself
+        "KXNBAGAME-26OCT20OKCSAS-BOS",  # YES team is not in this game
+        "not-a-ticker",
+    ],
+)
+def test_unparseable_tickers_return_none_rather_than_guessing(ticker):
+    from kalshi_edge.data.teams import parse_ticker_game
+
+    assert parse_ticker_game(ticker) is None
+
+
+def test_yes_team_selects_that_team_s_probabilities(tmp_path):
+    """The YES side must take its own team's book probs, whichever way the odds feed
+    orients home/away -- backing the wrong side would be a silent, expensive error."""
+    from kalshi_edge.data.matcher import fair_value_for_market
+    from kalshi_edge.data.odds import GameOdds
+    from kalshi_edge.kalshi.models import Market
+
+    game = GameOdds(
+        home="SAS",
+        away="OKC",
+        home_book_probs=[0.60, 0.60],
+        away_book_probs=[0.40, 0.40],
+        source="test",
+        commence_time=None,
+    )
+    for team, expected in (("SAS", 0.60), ("OKC", 0.40)):
+        m = Market.model_validate(
+            {
+                "ticker": f"KXNBAGAME-26OCT20OKCSAS-{team}",
+                "event_ticker": "KXNBAGAME-26OCT20OKCSAS",
+                "title": f"{team} wins",
+                "status": "active",
+                "yes_ask_dollars": "0.50",
+            }
+        )
+        fv = fair_value_for_market(m, [game])
+        assert fv is not None and fv.p_fair == pytest.approx(expected, abs=0.02)

@@ -46,11 +46,19 @@ def ingest_settlements(
 
 
 def build_settled_trades(conn: sqlite3.Connection, *, mode: str) -> list[SettledTrade]:
-    """Join filled orders with recorded settlements into gradeable trades."""
+    """Join filled orders with recorded settlements into gradeable trades.
+
+    Sizes come from ``filled_count``, never ``count``: a partially filled order must be
+    graded at the contracts that actually traded. Grading the requested size would feed
+    the consistency gate -- the thing standing between paper and real money -- with
+    trades that never happened at that size. ``filled_count > 0`` also drops any row
+    that ended up filling nothing.
+    """
     rows = conn.execute(
-        """SELECT o.ticker, o.side, o.price, o.count, o.fee, o.p_fair, o.p_market, s.result
+        """SELECT o.ticker, o.side, o.price, o.filled_count, o.fee, o.p_fair, o.p_market,
+                  s.result
            FROM orders o JOIN settlements s ON o.ticker = s.ticker
-           WHERE o.mode = ? AND o.status = 'filled'
+           WHERE o.mode = ? AND o.status = 'filled' AND o.filled_count > 0
              AND o.p_fair IS NOT NULL AND o.p_market IS NOT NULL""",
         (mode,),
     ).fetchall()
@@ -59,7 +67,7 @@ def build_settled_trades(conn: sqlite3.Connection, *, mode: str) -> list[Settled
             ticker=r["ticker"],
             side=r["side"],
             price=r["price"],
-            count=r["count"],
+            count=r["filled_count"],
             fee=r["fee"],
             p_fair=r["p_fair"],
             p_market=r["p_market"],
@@ -70,16 +78,22 @@ def build_settled_trades(conn: sqlite3.Connection, *, mode: str) -> list[Settled
 
 
 def realized_daily_pnl(conn: sqlite3.Connection, *, mode: str, on_date: str) -> float:
-    """Realized PnL of trades that SETTLED on ``on_date`` (YYYY-MM-DD); for the daily-loss cap."""
+    """Realized PnL of trades that SETTLED on ``on_date`` (YYYY-MM-DD); for the daily-loss cap.
+
+    Uses ``filled_count`` for the same reason as grading: charging the daily-loss cap
+    for contracts that never filled would trip the stop early on losses we did not take.
+    """
     rows = conn.execute(
-        """SELECT o.side, o.price, o.count, o.fee, s.result
+        """SELECT o.side, o.price, o.filled_count, o.fee, s.result
            FROM orders o JOIN settlements s ON o.ticker = s.ticker
-           WHERE o.mode = ? AND o.status = 'filled' AND substr(s.settled_ts, 1, 10) = ?""",
+           WHERE o.mode = ? AND o.status = 'filled' AND o.filled_count > 0
+                 AND substr(s.settled_ts, 1, 10) = ?""",
         (mode, on_date),
     ).fetchall()
     total = 0.0
     for r in rows:
         won = (r["side"] == "yes") == (r["result"] == "yes")
-        payoff = float(r["count"]) if won else 0.0
-        total += payoff - (r["count"] * r["price"] + r["fee"])
+        n = r["filled_count"]
+        payoff = float(n) if won else 0.0
+        total += payoff - (n * r["price"] + r["fee"])
     return round(total, 4)

@@ -132,14 +132,60 @@ def parse_ticker_date(ticker: str) -> date | None:
         return None
 
 
+_TICKER_RE = re.compile(r"^[A-Z0-9]+-(?P<date>\d{2}[A-Z]{3}\d{2})(?P<pair>[A-Z]+)-(?P<yes>[A-Z]+)$")
+
+
+def parse_ticker_game(ticker: str) -> ParsedGame | None:
+    """Extract (away, home, yes-team, date) from the TICKER alone.
+
+    Kalshi game tickers are ``<SERIES>-<YYMONDD><AWAY><HOME>-<TEAM>``, e.g.
+    ``KXNBAGAME-26OCT20OKCSAS-SAS`` = OKC at SAS on 2026-10-20, YES = San Antonio.
+    Orientation confirmed against live odds data for three separate games.
+
+    This exists because the ticker is *structured data* while the title is prose that
+    Kalshi can restyle at will -- and did: regular-season markets are titled
+    "San Antonio wins", which parses to nothing under the "X at Y" title grammar.
+    """
+    m = _TICKER_RE.match(ticker)
+    if not m:
+        return None
+    pair, yes_code = m.group("pair"), m.group("yes")
+    yes = resolve_team(yes_code)
+    if not yes:
+        return None
+    # Split the concatenated pair. NBA tricodes are three characters, so try 3/3
+    # first, then fall back to any split where both halves resolve to distinct teams.
+    splits = [3, *[i for i in range(2, len(pair) - 1) if i != 3]]
+    for i in splits:
+        away, home = resolve_team(pair[:i]), resolve_team(pair[i:])
+        if away and home and away != home and yes in (away, home):
+            return ParsedGame(
+                away=away, home=home, yes_tricode=yes, game_date=parse_ticker_date(ticker)
+            )
+    return None
+
+
 def parse_kalshi_game(
     title: str | None, yes_sub_title: str | None, ticker: str
 ) -> ParsedGame | None:
     """Extract (away, home, yes-team, date) from a Kalshi game market.
 
-    Titles look like "Game 4: San Antonio at New York Winner?" or "A vs B winner?".
-    "X at Y" => X away, Y home. The YES team comes from ``yes_sub_title``.
+    Two independent routes, because relying on either alone has burned us:
+    the title grammar ("Game 4: San Antonio at New York Winner?") covers playoff-style
+    markets, and the ticker covers everything -- including the "San Antonio wins" style
+    Kalshi uses for regular-season games, which the title grammar cannot parse at all.
+
+    The ticker is tried whenever the title route yields nothing, so a future title
+    restyle degrades to a no-op rather than silently zeroing out every signal.
     """
+    parsed = _parse_from_title(title, yes_sub_title, ticker)
+    return parsed or parse_ticker_game(ticker)
+
+
+def _parse_from_title(
+    title: str | None, yes_sub_title: str | None, ticker: str
+) -> ParsedGame | None:
+    """ "X at Y" / "X vs Y" title grammar. Returns None on any other shape."""
     if not title:
         return None
     t = re.sub(r"^\s*game\s+\d+\s*:\s*", "", title, flags=re.I)

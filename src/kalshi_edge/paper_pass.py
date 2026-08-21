@@ -44,7 +44,9 @@ def run_once(settings: Settings | None = None) -> dict[str, int]:
         # Confirm what actually filled BEFORE sizing anything new, so this pass
         # sees true exposure rather than last pass's optimistic guess. No-op in
         # paper mode, which fills by construction.
-        counts["reconciled"] = reconcile_pending(conn, client, mode=s.execution_mode).changed
+        counts["reconciled"] = reconcile_pending(
+            conn, client, mode=s.execution_mode, fee_multiplier=s.fee_multiplier
+        ).changed
         games = get_game_odds_cached(s)[0] if s.has_odds_source else fixture_game_odds()
         now = datetime.now(UTC)
         for m in tradeable_markets(fetch_markets(client, s.kalshi_series)):

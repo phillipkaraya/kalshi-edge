@@ -90,6 +90,32 @@ clean. What each one actually changed:
    Halt a live session with: `touch data/KILL`
    Test: `test_kill_switch_file_halts_a_running_session`.
 
+## Found while closing the backlog (2026-08-21)
+- **Grading and the daily-loss cap read `count` instead of `filled_count`** — FIXED.
+  Splitting requested from confirmed left both consumers on the requested size, so a
+  partial fill would have been graded, and charged against the stop, at full size.
+  Latent in paper (where they are equal); live-only, and exactly the bug #1 exists to
+  prevent. Regression tests fail against the old queries.
+- **The recorded fee was never restated after a partial fill** — FIXED. An order booked
+  for 100 that filled 10 kept a 100-contract fee, overstating cost in grading and the
+  daily-loss cap. Reconciliation now recomputes it.
+- **The Positions page counted resting orders as rejections** — FIXED. `pending` is
+  reported separately, so an accepted order no longer reads to the user as a failure.
+- **Stale pending orders** — DETECTED, deliberately NOT auto-expired. A long-resting
+  order is still live on Kalshi's book, so dropping it locally would free cap room that
+  is genuinely committed and let the next pass oversize. They are counted and surfaced;
+  cancelling one is a trading action and stays a deliberate human act. *Open question
+  for Phil: what policy should apply to an order resting more than a day?*
+- **🔴 The market matcher had gone blind, and this was the big one** — FIXED. Kalshi
+  titles regular-season game markets **"San Antonio wins"**, but `parse_kalshi_game`
+  only understood the playoff-style **"X at Y Winner?"** grammar, so every market
+  parsed to `None` and the scheduled pass produced **zero signals**. It would have run
+  all season logging nothing, and the ≥100-trade consistency gate could never have
+  filled. Parsing now falls back to the ticker (`KXNBAGAME-26OCT20OKCSAS-SAS` =
+  OKC at SAS, YES = SAS), which is structured data rather than prose Kalshi can
+  restyle. Verified live: **6 of 6 open markets now match and produce signals**, each
+  against the correct distinct game.
+
 ## Still open before real capital
 - **#7's credentialed demo dry-run** (above) — the one item code cannot close.
 - Rotate the Kalshi private key: it transited a chat transcript on 2026-06-01 and
