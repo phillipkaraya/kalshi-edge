@@ -6,14 +6,14 @@ compares it to Kalshi's price, ranks the disagreements ("edges") by expected
 value, paper-trades them with full logging, and — only once a measured
 **consistency gate** passes — can flip to gated live auto-trading.
 
-> **Live board:** <https://intellovatebets.streamlit.app> — read-only, live NBA odds, no credentials needed.
+> **Live board:** <https://intellovatebets.streamlit.app> — read-only, live NBA odds. Currently behind a Streamlit login gate; message me for access.
 >
-> **Status:** Slices 0–5 built — edge engine, four-signal fusion, paper execution, consistency gate, and gated live trading are all implemented and tested; shipped behind a paper-trading switch.
+> **Status:** Slices 0–5 built — edge engine, four-signal fusion, paper execution, consistency gate, and gated live trading are all implemented and tested; shipped behind a paper-trading switch. 167 tests passing, ruff clean.
 
 ## Quickstart
 
 ```bash
-uv sync
+uv sync --extra dev
 uv run streamlit run src/kalshi_edge/ui/app.py
 ```
 
