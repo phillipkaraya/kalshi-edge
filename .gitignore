@@ -2,6 +2,8 @@
 __pycache__/
 *.pyc
 .env
+.env.*
+.env.bak-*
 *.pem
 data/
 .streamlit/secrets.toml
