@@ -17,6 +17,7 @@ from kalshi_edge.config import Settings
 from kalshi_edge.data.fixtures import fixture_game_odds
 from kalshi_edge.data.matcher import fair_value_for_market
 from kalshi_edge.data.odds import get_game_odds_cached
+from kalshi_edge.db.supabase_mirror import mirror
 from kalshi_edge.execution.engine import ExecutionEngine, ticket_from_edge
 from kalshi_edge.execution.reconcile import reconcile_pending
 from kalshi_edge.execution.risk import RiskConfig, RiskManager
@@ -40,6 +41,7 @@ def run_once(settings: Settings | None = None) -> dict[str, int]:
         "reconciled": 0,
         "stale": 0,
         "out_of_window": 0,
+        "mirrored": 0,
     }
     try:
         counts["settled"] = ingest_settlements(conn, client, s.kalshi_series)
@@ -85,6 +87,12 @@ def run_once(settings: Settings | None = None) -> dict[str, int]:
                 counts["filled"] += result.status == "filled"
                 counts["pending"] += result.status == "pending"
                 counts["rejected"] += result.status == "rejected"
+        # Mirror LAST, so a board problem can never affect trading. `mirror` swallows
+        # its own failures and returns {"mirror_error": 1} rather than raising.
+        m = mirror(conn, s)
+        counts["mirrored"] = sum(v for k, v in m.items() if k != "mirror_error")
+        if m.get("mirror_error"):
+            counts["mirror_error"] = 1
     finally:
         client.close()
         conn.close()
@@ -115,6 +123,11 @@ def health_warnings(counts: dict[str, int]) -> list[str]:
             f"NOTE: all {counts['markets']} open markets are outside the "
             "[min_hours_to_tip, max_hours_to_tip] window, so none were evaluated. "
             "This is the designed dormant state between game days, not a fault."
+        )
+    if counts.get("mirror_error"):
+        warnings.append(
+            "WARNING: the Supabase mirror failed, so the hosted board is serving stale "
+            "data. Trading is unaffected -- local SQLite is still the source of truth."
         )
     if counts.get("stale"):
         warnings.append(

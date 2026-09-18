@@ -63,6 +63,18 @@ class Settings(BaseSettings):
     # --- Storage -------------------------------------------------------------
     db_path: Path = Path("data/kalshi_edge.db")
 
+    # --- Supabase mirror (read-only board on Vercel) -------------------------
+    # SQLite stays the primary store. This is a one-way mirror so the hosted board
+    # has durable data: Streamlit Cloud and Vercel both run ephemeral filesystems,
+    # so a local .db file is invisible to them. Absent config = mirroring disabled,
+    # and the pass must still succeed. See db/supabase_mirror.py.
+    supabase_url: str | None = None
+    supabase_service_role_key: str | None = None
+
+    @property
+    def has_supabase(self) -> bool:
+        return bool(self.supabase_url and self.supabase_service_role_key)
+
     # --- Execution / risk (Slice 2+) ----------------------------------------
     execution_mode: Literal["paper", "demo", "live"] = "paper"
     max_contracts_per_market: int = 200
