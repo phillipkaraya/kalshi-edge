@@ -9,8 +9,6 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "cryptography>=42.0",
-    "streamlit>=1.36",
-    "pandas>=2.2",
     "rich>=13.7",
 ]
 

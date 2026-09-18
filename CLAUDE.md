@@ -2,14 +2,15 @@
 
 NBA prediction-market decision engine for Kalshi: devig the sportsbook consensus,
 find where Kalshi's price disagrees, paper-trade the edge, then auto-trade behind
-a measured consistency gate. Live board: https://intellovatebets.streamlit.app
+a measured consistency gate. Live board: https://kalshi-edge-board-lake.vercel.app (separate Next.js repo, ~/projects/kalshi-edge-board)
 
 > Product/display name is **IntellovateBets**. The Python package and repo stay `kalshi_edge` / `kalshi-edge` (import paths and directory names are unchanged).
 
 ## Stack
 - Python 3.12, `uv` + hatchling, `src/` layout
 - httpx (HTTP), pydantic + pydantic-settings (models/config), cryptography (RSA-PSS signing)
-- Streamlit (dashboard), pandas (tables), SQLite (ledger/backtest), Rich (CLI logs)
+- SQLite (ledger/backtest, primary), Supabase (read-only mirror for the board), httpx, Rich (CLI logs).
+  No web UI in this repo: the board is a separate Next.js app on Vercel.
 
 ## Structure
 - `src/kalshi_edge/config.py` -- settings (.env); env (prod/demo) + host switch
@@ -18,12 +19,11 @@ a measured consistency gate. Live board: https://intellovatebets.streamlit.app
 - `src/kalshi_edge/model/` -- p_fair blend, edge/EV/Kelly, momentum, arbitrage (Slice 1+)
 - `src/kalshi_edge/execution/` -- paper|demo|live engine, risk gate, ledger (Slice 2+)
 - `src/kalshi_edge/backtest/` -- consistency: ROI/Brier/calibration (Slice 3)
-- `src/kalshi_edge/ui/` -- Streamlit Edge Board + pages
 - `tests/` -- pytest (devig, EV, Kelly, risk gate, signing)
 
 ## Commands
 - Install: `uv sync`
-- Dashboard: `uv run streamlit run src/kalshi_edge/ui/app.py`
+- Board: separate repo `~/projects/kalshi-edge-board` (`npm run dev`, port 3010)
 - Test: `uv run pytest`
 - Lint/format: `uvx ruff check --fix && uvx ruff format`   (type-check: `uvx ty check src`)
 
