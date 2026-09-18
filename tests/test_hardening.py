@@ -626,3 +626,58 @@ def test_stale_orders_are_surfaced_in_the_pass_output():
 
     out = health_warnings({"markets": 1, "signals": 1, "stale": 2})
     assert out and "resting far longer" in out[0]
+
+
+# --- Universe window: only trade games close enough that the line is live -----
+#
+# Regression cover for the 2026-09-18 audit: the pass spent four weeks trading
+# NBA opening-night markets 32 days out, where the devigged book consensus was
+# frozen at a single value across 605 observations while Kalshi's price swung
+# 0.315 to 0.510. Every "edge" was Kalshi noise against a placeholder line.
+
+
+def test_fair_value_reports_signed_hours_to_tip():
+    """Negative means the game already tipped, which confidence_score must not see."""
+    from kalshi_edge.model.probability import fair_value
+
+    fv = fair_value([0.5, 0.5], hours_to_tip=-3.0)
+    assert fv.hours_to_tip == -3.0
+    # Clamped on the way into scoring, so an in-progress game does not read as
+    # maximally timely. -3h clamps to 0 -> timing = min(1, 48/max(0,1)) = 1.0,
+    # identical to what a tipping-now game scored before the field existed.
+    assert fair_value([0.5, 0.5], hours_to_tip=0.0).confidence == fv.confidence
+
+
+def test_a_game_weeks_out_is_skipped_and_counted_separately():
+    from kalshi_edge.config import Settings
+
+    s = Settings()
+    assert s.max_hours_to_tip == 72.0
+    far = 32 * 24.0  # the opening-night case
+    assert not (s.min_hours_to_tip <= far <= s.max_hours_to_tip)
+    assert s.min_hours_to_tip <= 24.0 <= s.max_hours_to_tip  # tomorrow: tradeable
+
+
+def test_in_progress_game_is_outside_the_window():
+    """Our book line is pre-game; Kalshi is trading the live game. Never cross them."""
+    from kalshi_edge.config import Settings
+
+    s = Settings()
+    assert not (s.min_hours_to_tip <= -0.5 <= s.max_hours_to_tip)
+
+
+def test_out_of_window_markets_do_not_trip_the_matcher_alarm():
+    """The 0-signals alarm means "the matcher broke", not "it is between game days"."""
+    from kalshi_edge.paper_pass import health_warnings
+
+    # All six skipped by the gate: informational note, never a WARNING.
+    out = health_warnings({"markets": 6, "signals": 0, "out_of_window": 6})
+    assert not any(w.startswith("WARNING") for w in out)
+    assert any("designed dormant state" in w for w in out)
+
+    # Four skipped, two in window, still no signals: the matcher IS broken.
+    out = health_warnings({"markets": 6, "signals": 0, "out_of_window": 4})
+    assert any(w.startswith("WARNING") and "0 signals" in w for w in out)
+
+    # Unchanged when nothing is gated.
+    assert health_warnings({"markets": 6, "signals": 6, "out_of_window": 0}) == []

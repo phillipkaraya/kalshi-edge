@@ -55,7 +55,8 @@ def fair_value_for_market(
         tip = game.commence_time
         if tip.tzinfo is None:
             tip = tip.replace(tzinfo=UTC)
-        hours_to_tip = max(0.0, (tip - now).total_seconds() / 3600.0)
+        # Signed on purpose: a negative value means the game is already underway.
+        hours_to_tip = (tip - now).total_seconds() / 3600.0
     return fair_value(
         probs,
         kalshi_spread=market.spread,

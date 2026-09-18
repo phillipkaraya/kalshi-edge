@@ -39,6 +39,7 @@ def run_once(settings: Settings | None = None) -> dict[str, int]:
         "settled": 0,
         "reconciled": 0,
         "stale": 0,
+        "out_of_window": 0,
     }
     try:
         counts["settled"] = ingest_settlements(conn, client, s.kalshi_series)
@@ -57,6 +58,14 @@ def run_once(settings: Settings | None = None) -> dict[str, int]:
             storage.log_snapshot(conn, m)
             fv = fair_value_for_market(m, games, now=now)
             if fv is None:
+                continue
+            # Universe gate. Counted separately from an unmatched market so that
+            # "0 signals" keeps meaning "the matcher broke" and not "it is the
+            # offseason" -- see health_warnings.
+            if fv.hours_to_tip is not None and not (
+                s.min_hours_to_tip <= fv.hours_to_tip <= s.max_hours_to_tip
+            ):
+                counts["out_of_window"] += 1
                 continue
             edge = evaluate_edge(
                 fv.p_fair,
@@ -92,11 +101,20 @@ def health_warnings(counts: dict[str, int]) -> list[str]:
     turn that shape into a line a human (or the registry sweeper) can actually see.
     """
     warnings = []
-    if counts["markets"] > 0 and counts["signals"] == 0:
+    # Markets skipped by the universe gate are deliberately not evaluated, so they
+    # must not count toward the "every market failed to match" signature below.
+    considered = counts["markets"] - counts.get("out_of_window", 0)
+    if considered > 0 and counts["signals"] == 0:
         warnings.append(
-            f"WARNING: {counts['markets']} tradeable markets but 0 signals -- every market "
+            f"WARNING: {considered} in-window markets but 0 signals -- every market "
             "failed to match odds. Check ticker/title parsing (data/teams.py) and odds "
             "coverage before assuming the market is simply efficient."
+        )
+    if counts["markets"] > 0 and considered == 0:
+        warnings.append(
+            f"NOTE: all {counts['markets']} open markets are outside the "
+            "[min_hours_to_tip, max_hours_to_tip] window, so none were evaluated. "
+            "This is the designed dormant state between game days, not a fault."
         )
     if counts.get("stale"):
         warnings.append(

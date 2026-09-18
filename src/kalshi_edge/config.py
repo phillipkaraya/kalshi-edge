@@ -48,6 +48,16 @@ class Settings(BaseSettings):
     kelly_fraction: float = 0.25  # fraction of full Kelly (0.25 = quarter-Kelly)
     max_position_fraction: float = 0.05  # hard cap: max share of bankroll per market
     min_ev: float = 0.01  # only surface edges with net EV >= this (per contract, $)
+    # --- Universe: how close to tip a game must be to be worth trading -------
+    # Books post a placeholder line for a game weeks out and leave it there. Our
+    # fair value is the devigged book consensus, so a pinned line means p_fair is
+    # frozen while Kalshi's price wanders, and every "edge" is Kalshi noise. The
+    # confidence score does NOT catch this: five books agreeing on a stale number
+    # scores as high coverage and high agreement. Hence a hard window.
+    max_hours_to_tip: float = 72.0  # skip games further out than this (3 days)
+    # At or after tip the cached book moneyline is pre-game while Kalshi trades
+    # the live game. Never trade into that without a live odds feed.
+    min_hours_to_tip: float = 0.0
     fee_multiplier: float = 0.07  # Kalshi taker fee multiplier (sports/standard, Feb 2026)
 
     # --- Storage -------------------------------------------------------------

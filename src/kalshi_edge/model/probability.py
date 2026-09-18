@@ -20,6 +20,10 @@ class FairValue:
     n_books: int
     dispersion: float
     source: str
+    # Signed hours until tip: negative means the game has already started, which
+    # makes our cached pre-game book line stale against a live Kalshi market.
+    # None when the odds feed gave no commence_time.
+    hours_to_tip: float | None = None
 
 
 def confidence_score(
@@ -53,7 +57,9 @@ def fair_value(
         n_books=len(book_probs),
         book_dispersion=disp,
         kalshi_spread=kalshi_spread,
-        hours_to_tip=hours_to_tip,
+        # confidence_score has always seen a non-negative value; clamping here
+        # keeps its scoring identical now that the field itself is signed.
+        hours_to_tip=None if hours_to_tip is None else max(0.0, hours_to_tip),
     )
     return FairValue(
         p_fair=p,
@@ -61,4 +67,5 @@ def fair_value(
         n_books=len(book_probs),
         dispersion=disp,
         source=source,
+        hours_to_tip=hours_to_tip,
     )
